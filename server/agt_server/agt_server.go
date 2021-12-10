@@ -9,7 +9,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -134,20 +133,22 @@ func generateAgt(payload Payload) string {
 	if len(payload.Key) != 0 {
 		exp = iat + 7*24*60*60 // 1 week
 	}
-	jwtHeader := `{"alg":"HS256","typ":"JWT"}`
-	jwtPayload := `{"vin":"` + payload.Vin + `", "iat":` + strconv.Itoa(iat) + `, "exp":` + strconv.Itoa(exp) + `, "clx":"` + payload.Context + `"`
+	var jwtoken utils.JsonWebToken
+	jwtoken.SetHeader("ES256")
+	jwtoken.AddClaim("vin", payload.Vin)
+	jwtoken.AddClaim("iat", strconv.Itoa(iat))
+	jwtoken.AddClaim("exp", strconv.Itoa(exp))
+	jwtoken.AddClaim("clx", payload.Context)
 	if len(payload.Key) != 0 {
-		jwtPayload += `, "pub": "` + payload.Key + `"`
+		jwtoken.AddClaim("pub", payload.Key)
 	}
-	jwtPayload += `, "aud": "w3.org/gen2", "jti":"` + string(uuid) + `"}`
-	utils.Info.Printf("generateAgt:jwtHeader=%s", jwtHeader)
-	utils.Info.Printf("generateAgt:jwtPayload=%s", jwtPayload)
-	encodedJwtHeader := base64.RawURLEncoding.EncodeToString([]byte(jwtHeader))
-	encodedJwtPayload := base64.RawURLEncoding.EncodeToString([]byte(jwtPayload))
-	utils.Info.Printf("generateAgt:encodedJwtHeader=%s", encodedJwtHeader)
-	jwtSignature := utils.GenerateHmac(encodedJwtHeader+"."+encodedJwtPayload, theAgtSecret)
-	encodedJwtSignature := base64.RawURLEncoding.EncodeToString([]byte(jwtSignature))
-	return `{"token":"` + encodedJwtHeader + "." + encodedJwtPayload + "." + encodedJwtSignature + `"}`
+	jwtoken.AddClaim("aud", "w3org/gen2")
+	jwtoken.AddClaim("jti", string(uuid))
+	utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
+	utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
+	jwtoken.Encode()
+	jwtoken.Sign(theAgtSecret)
+	return `{"token":"` + jwtoken.GetFullToken() + `"}`
 }
 
 func main() {

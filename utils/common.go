@@ -39,6 +39,15 @@ type TranspRegResponse struct {
 	Mgrid   int
 }
 
+type JsonWebToken struct {
+	Header         string
+	Payload        string
+	EncodedHeader  string
+	EncodedPayload string
+	Signature      string
+	EncodedToken   string
+}
+
 func GetServerIP() string {
 	if value, ok := os.LookupEnv(IpEnvVarName); ok {
 		Info.Println("ServerIP:", value)
@@ -92,7 +101,43 @@ func PathToUrl(path string) string {
 	return "/" + url
 }
 
-func GenerateHmac(input string, key string) string { //not a correct JWT signature?
+func (token *JsonWebToken) SetHeader(algorithm string) {
+	token.Header = `{"alg":"` + algorithm + `","typ":"JWT"}`
+}
+
+func (token *JsonWebToken) AddClaim(key string, value string) {
+	if token.Payload == "" {
+		token.Payload = `{"` + key + `":"` + value + `"}`
+	} else {
+		token.Payload = token.Payload[:len(token.Payload)-1] + `,"` + key + `":"` + value + `"}`
+	}
+}
+
+func (token *JsonWebToken) Encode() {
+	token.EncodedHeader = base64.RawURLEncoding.EncodeToString([]byte(token.Header))
+	token.EncodedPayload = base64.RawURLEncoding.EncodeToString([]byte(token.Payload))
+}
+
+func (token *JsonWebToken) Sign(key string) {
+	token.Encode()
+	token.EncodedToken = token.EncodedHeader + "." + token.EncodedPayload
+	token.Signature = base64.RawURLEncoding.EncodeToString([]byte(GenerateHmac(token.EncodedToken, key)))
+	token.EncodedToken = token.EncodedToken + "." + token.Signature
+}
+
+func (token JsonWebToken) GetFullToken() string {
+	return token.EncodedToken
+}
+
+func (token JsonWebToken) GetHeader() string {
+	return token.Header
+}
+
+func (token JsonWebToken) GetPayload() string {
+	return token.Payload
+}
+
+func GenerateHmac(input string, key string) string {
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(input))
 	return string(mac.Sum(nil))
