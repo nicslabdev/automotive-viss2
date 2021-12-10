@@ -50,10 +50,10 @@ type NoScopePayload struct {
 }
 
 type AtValidatePayload struct {
-	Token      string `json:"token"`
+	Token      string   `json:"token"`
 	Paths      []string `json:"paths"`
-	Action     string `json:"action"`
-	Validation string `json:"validation"`
+	Action     string   `json:"action"`
+	Validation string   `json:"validation"`
 }
 
 type AtGenPayload struct {
@@ -303,15 +303,15 @@ func extractAtValidatePayloadLevel1(atValidateMap map[string]interface{}, atVali
 			extractAtValidatePayloadLevel2(vv, atValidatePayload)
 		case string:
 			utils.Info.Println(k, "is a string:")
-			if (k == "token") {
-			    atValidatePayload.Token = v.(string)
-			} else if (k == "action") {
-			    atValidatePayload.Action = v.(string)
-			} else if (k == "validation") {
-			    atValidatePayload.Validation = v.(string)
-			} else if (k == "paths") {
-			    atValidatePayload.Paths = make([]string, 1)
-			    atValidatePayload.Paths[0] = v.(string)
+			if k == "token" {
+				atValidatePayload.Token = v.(string)
+			} else if k == "action" {
+				atValidatePayload.Action = v.(string)
+			} else if k == "validation" {
+				atValidatePayload.Validation = v.(string)
+			} else if k == "paths" {
+				atValidatePayload.Paths = make([]string, 1)
+				atValidatePayload.Paths[0] = v.(string)
 			}
 		default:
 			utils.Info.Println(k, "is of an unknown type")
@@ -471,7 +471,7 @@ func generateAt(payload AtGenPayload, context string) string {
 	uuid = uuid[:len(uuid)-1] // remove '\n' char
 	iat := int(time.Now().Unix())
 	exp := iat + 1*60*60 // 1 hour
-	jwtHeader := `{"alg":"ES256","typ":"JWT"}`
+	jwtHeader := `{"alg":"HS256","typ":"JWT"}`
 	jwtPayload := `{"iat":` + strconv.Itoa(iat) + `,"exp":` + strconv.Itoa(exp) + `,"pur":"` + payload.Purpose + `"` + `,"clx":"` + context +
 		`","aud": "w3.org/gen2","jti":"` + string(uuid) + `"}`
 	utils.Info.Printf("generateAt:jwtHeader=%s", jwtHeader)

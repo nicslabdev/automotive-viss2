@@ -134,7 +134,7 @@ func generateAgt(payload Payload) string {
 	if len(payload.Key) != 0 {
 		exp = iat + 7*24*60*60 // 1 week
 	}
-	jwtHeader := `{"alg":"ES256","typ":"JWT"}`
+	jwtHeader := `{"alg":"HS256","typ":"JWT"}`
 	jwtPayload := `{"vin":"` + payload.Vin + `", "iat":` + strconv.Itoa(iat) + `, "exp":` + strconv.Itoa(exp) + `, "clx":"` + payload.Context + `"`
 	if len(payload.Key) != 0 {
 		jwtPayload += `, "pub": "` + payload.Key + `"`
@@ -152,7 +152,7 @@ func generateAgt(payload Payload) string {
 
 func main() {
 	// Create new parser object
-	parser := argparse.NewParser("print", "AGT Server")
+	parser := argparse.NewParser("agt_server", "Process that simulates the behaviour of the Access Grant Server")
 	// Create string flag
 	logFile := parser.Flag("", "logfile", &argparse.Options{Required: false, Help: "outputs to logfile in ./logs folder"})
 	logLevel := parser.Selector("", "loglevel", []string{"trace", "debug", "info", "warn", "error", "fatal", "panic"}, &argparse.Options{
