@@ -9,7 +9,6 @@
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -56,20 +55,22 @@ type AtValidatePayload struct {
 	Validation string   `json:"validation"`
 }
 
-type AtGenPayload struct {
-	Token   string `json:"token"`
-	Purpose string `json:"purpose"`
-	Pop     string `json:"pop"`
-}
-
 type AgToken struct {
 	Vin      string `json:"vin"`
-	Iat      int    `json:"iat"`
-	Exp      int    `json:"exp"`
+	Iat      string `json:"iat"`
+	Exp      string `json:"exp"`
 	Context  string `json:"clx"`
 	Key      string `json:"pub"`
 	Audience string `json:"aud"`
 	JwtId    string `json:"jti"`
+	Alg      string `json:"alg"`
+}
+
+type AtGenPayload struct { // Struct containing all received data in the request (AGT encoded + claims + DecodedAGT)
+	Token   string `json:"token"`
+	Purpose string `json:"purpose"`
+	Pop     string `json:"pop"`
+	Agt     AgToken
 }
 
 var purposeList map[string]interface{}
@@ -335,19 +336,20 @@ func extractAtValidatePayloadLevel2(pathList []interface{}, atValidatePayload *A
 }
 
 func accessTokenResponse(input string) string {
-	var payload AtGenPayload
+	var payload AtGenPayload // struct containing encodedAGT + claims received
 	err := json.Unmarshal([]byte(input), &payload)
 	if err != nil {
 		utils.Error.Printf("accessTokenResponse:error input=%s", input)
 		return `{"error": "Client request malformed"}`
 	}
-	agToken, errResp := extractTokenPayload(payload.Token)
+	var errResp string
+	payload.Agt, errResp = extractTokenPayload(payload.Token)
 	if len(errResp) > 0 {
 		return errResp
 	}
-	ok, errResponse := validateRequest(payload, agToken)
-	if ok == true {
-		return generateAt(payload, agToken.Context)
+	valid, errResponse := validateRequest(payload)
+	if valid == true {
+		return generateAt(payload)
 	}
 	return errResponse
 }
@@ -414,74 +416,95 @@ func getActorRole(actorIndex int, context string) string {
 	return context[delimiter1+1+delimiter2+1:]
 }
 
-func decodeTokenPayload(token string) string {
-	delim1 := strings.Index(token, ".")
-	delim2 := delim1 + 1 + strings.Index(token[delim1+1:], ".")
-	pload := token[delim1+1 : delim1+1+delim2]
-	payload, _ := base64.RawURLEncoding.DecodeString(pload)
-	//utils.Info.Printf("decodeTokenPayload:payload=%s", string(payload))
-	return string(payload)
-}
+// func decodeTokenPayload(token string) string {
+// 	delim1 := strings.Index(token, ".")
+// 	delim2 := strings.Index(token[delim1+1:], ".")
+// 	pload := token[delim1+1 : delim1+1+delim2]
+// 	payload, _ := base64.RawURLEncoding.DecodeString(pload)
+// 	//utils.Info.Printf("decodeTokenPayload:payload=%s", string(payload))
+// 	return string(payload)
+// }
 
 func extractTokenPayload(token string) (AgToken, string) {
-	var agToken AgToken
-	tokenPayload := decodeTokenPayload(token)
-	err := json.Unmarshal([]byte(tokenPayload), &agToken)
+	var claims AgToken
+	var agt utils.JsonWebToken
+	err := agt.DecodeFromFull(token)
 	if err != nil {
-		utils.Error.Printf("extractTokenPayload:token payload=%s, error=%s", tokenPayload, err)
-		return agToken, `{"error": "AG token malformed"}`
+		utils.Error.Printf("extractTokenPayload:unable to decode token, error= ", err)
+		return claims, `{error: AG token malformed}`
 	}
-	return agToken, ""
+	err = json.Unmarshal([]byte(agt.GetPayload()), &claims)
+	if err != nil {
+		utils.Error.Printf("extractTokenPayload:token payload=%s, error=%s", agt.GetPayload(), err)
+		return claims, `{"error": "AG token malformed"}`
+	}
+	err = json.Unmarshal([]byte(agt.GetHeader()), &claims)
+	if err != nil {
+		utils.Error.Printf("extractTokenPayload:token header=%s, error=%s", agt.GetHeader(), err)
+		return claims, `{"error": "AG token malformed"}`
+	}
+	return claims, ""
 }
 
 func checkVin(vin string) bool {
 	return true // should be checked with VIN in tree
 }
 
-func validateRequest(payload AtGenPayload, agToken AgToken) (bool, string) {
-	if checkVin(agToken.Vin) == false {
-		utils.Info.Printf("validateRequest:incorrect VIN=%s", agToken.Vin)
+func validateRequest(payload AtGenPayload) (bool, string) {
+	if checkVin(payload.Agt.Vin) == false {
+		utils.Info.Printf("validateRequest:incorrect VIN=%s", payload.Agt.Vin)
 		return false, `{"error": "Incorrect vehicle identifiction"}`
 	}
 	if utils.VerifyTokenSignature(payload.Token, theAgtSecret) == false {
 		utils.Info.Printf("validateRequest:invalid signature=%s", payload.Token)
 		return false, `{"error": "AG token signature validation failed"}`
 	}
-	if validateTokenTimestamps(agToken.Iat, agToken.Exp) == false {
-		utils.Info.Printf("validateRequest:invalid token timestamps, iat=%d, exp=%d", agToken.Iat, agToken.Exp)
+	iat, err := strconv.Atoi(payload.Agt.Iat)
+	if err != nil {
+		return false, `{"error": AG token iat timestamp malformed"}`
+	}
+	exp, err := strconv.Atoi(payload.Agt.Exp)
+	if err != nil {
+		return false, `{"error": "AG token exp timestamp malformed"}`
+	}
+	if validateTokenTimestamps(iat, exp) == false {
+		utils.Info.Printf("validateRequest:invalid token timestamps, iat=%d, exp=%d", payload.Agt.Iat, payload.Agt.Exp)
 		return false, `{"error": "AG token timestamp validation failed"}`
 	}
-	if len(agToken.Key) != 0 && payload.Pop != "GHI" { // PoP should be a signed timestamp
+	if payload.Agt.Key != "" && payload.Pop != "GHI" { // PoP should be a signed timestamp
 		utils.Info.Printf("validateRequest:Proof of possession of key pair failed")
 		return false, `{"error": "Proof of possession of key pair failed"}`
 	}
-	if validatePurpose(payload.Purpose, agToken.Context) == false {
-		utils.Info.Printf("validateRequest:invalid purpose=%s, context=%s", payload, agToken.Context)
+	if validatePurpose(payload.Purpose, payload.Agt.Context) == false {
+		utils.Info.Printf("validateRequest:invalid purpose=%s, context=%s", payload.Purpose, payload.Agt.Context)
 		return false, `{"error": "Purpose validation failed"}`
 	}
 	return true, ""
 }
 
-func generateAt(payload AtGenPayload, context string) string {
+func generateAt(payload AtGenPayload) string {
 	uuid, err := exec.Command("uuidgen").Output()
 	if err != nil {
-		utils.Error.Printf("generateAt:Error generating uuid, err=%s", err)
+		utils.Error.Printf("generateAgt:Error generating uuid, err=%s", err)
 		return `{"error": "Internal error"}`
 	}
 	uuid = uuid[:len(uuid)-1] // remove '\n' char
 	iat := int(time.Now().Unix())
 	exp := iat + 1*60*60 // 1 hour
-	jwtHeader := `{"alg":"HS256","typ":"JWT"}`
-	jwtPayload := `{"iat":` + strconv.Itoa(iat) + `,"exp":` + strconv.Itoa(exp) + `,"pur":"` + payload.Purpose + `"` + `,"clx":"` + context +
-		`","aud": "w3.org/gen2","jti":"` + string(uuid) + `"}`
-	utils.Info.Printf("generateAt:jwtHeader=%s", jwtHeader)
-	utils.Info.Printf("generateAt:jwtPayload=%s", jwtPayload)
-	encodedJwtHeader := base64.RawURLEncoding.EncodeToString([]byte(jwtHeader))
-	encodedJwtPayload := base64.RawURLEncoding.EncodeToString([]byte(jwtPayload))
-	utils.Info.Printf("generateAt:encodedJwtHeader=%s", encodedJwtHeader)
-	jwtSignature := utils.GenerateHmac(encodedJwtHeader+"."+encodedJwtPayload, theAtSecret)
-	encodedJwtSignature := base64.RawURLEncoding.EncodeToString([]byte(jwtSignature))
-	return `{"token":"` + encodedJwtHeader + "." + encodedJwtPayload + "." + encodedJwtSignature + `"}`
+	var jwtoken utils.JsonWebToken
+	jwtoken.SetHeader(payload.Agt.Alg)
+	//jwtoken.AddClaim("vin", AtGenPayload.Agt.Vin)
+	jwtoken.AddClaim("iat", strconv.Itoa(iat))
+	jwtoken.AddClaim("exp", strconv.Itoa(exp))
+	jwtoken.AddClaim("pur", payload.Purpose)
+	jwtoken.AddClaim("clx", payload.Agt.Context)
+	jwtoken.AddClaim("aud", "w3org/gen2")
+	jwtoken.AddClaim("jti", string(uuid))
+	utils.Info.Printf("generateAt:jwtHeader=%s", jwtoken.GetHeader())
+	utils.Info.Printf("generateAt:jwtPayload=%s", jwtoken.GetPayload())
+	jwtoken.Encode()
+	jwtoken.Sign(theAtSecret)
+	return `{"token":"` + jwtoken.GetFullToken() + `"}`
 }
 
 func initPurposelist() {

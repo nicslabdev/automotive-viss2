@@ -134,7 +134,7 @@ func generateAgt(payload Payload) string {
 		exp = iat + 7*24*60*60 // 1 week
 	}
 	var jwtoken utils.JsonWebToken
-	jwtoken.SetHeader("ES256")
+	jwtoken.SetHeader("HS256")
 	jwtoken.AddClaim("vin", payload.Vin)
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))
