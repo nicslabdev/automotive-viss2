@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -37,6 +38,15 @@ type TranspRegResponse struct {
 	Portnum int
 	Urlpath string
 	Mgrid   int
+}
+
+type JsonWebToken struct {
+	Header           string
+	Payload          string
+	EncodedHeader    string
+	EncodedPayload   string
+	EncodedSignature string
+	EncodedToken     string
 }
 
 func GetServerIP() string {
@@ -92,26 +102,85 @@ func PathToUrl(path string) string {
 	return "/" + url
 }
 
-func GenerateHmac(input string, key string) string { //not a correct JWT signature?
+func (token *JsonWebToken) SetHeader(algorithm string) {
+	token.Header = `{"alg":"` + algorithm + `","typ":"JWT"}`
+}
+
+func (token *JsonWebToken) AddClaim(key string, value string) {
+	if token.Payload == "" {
+		token.Payload = `{"` + key + `":"` + value + `"}`
+	} else {
+		token.Payload = token.Payload[:len(token.Payload)-1] + `,"` + key + `":"` + value + `"}`
+	}
+}
+
+func (token *JsonWebToken) Encode() {
+	token.EncodedHeader = base64.RawURLEncoding.EncodeToString([]byte(token.Header))
+	token.EncodedPayload = base64.RawURLEncoding.EncodeToString([]byte(token.Payload))
+}
+
+func (token *JsonWebToken) Sign(key string) {
+	token.Encode()
+	token.EncodedToken = token.EncodedHeader + "." + token.EncodedPayload
+	token.EncodedSignature = base64.RawURLEncoding.EncodeToString([]byte(GenerateHmac(token.EncodedToken, key)))
+	token.EncodedToken = token.EncodedToken + "." + token.EncodedSignature
+}
+
+func (token JsonWebToken) GetFullToken() string {
+	return token.EncodedToken
+}
+
+func (token JsonWebToken) GetHeader() string {
+	return token.Header
+}
+
+func (token JsonWebToken) GetPayload() string {
+	return token.Payload
+}
+
+func (token *JsonWebToken) DecodeFromFull(input string) error {
+	parts := strings.Split(input, ".")
+	if len(parts) != 3 {
+		return errors.New("JWT not composed by 3 parts")
+	}
+	token.EncodedToken = input
+	token.EncodedHeader = parts[0]
+	token.EncodedPayload = parts[1]
+	token.EncodedSignature = parts[2]
+	header, err := base64.RawURLEncoding.DecodeString(token.EncodedHeader)
+	if err != nil {
+		return err
+	}
+	token.Header = string(header)
+	payload, err := base64.RawURLEncoding.DecodeString(token.EncodedPayload)
+	if err != nil {
+		return err
+	}
+	token.Payload = string(payload)
+	return nil
+}
+
+func (token JsonWebToken) CheckSignature(key string) bool {
+	if base64.RawURLEncoding.EncodeToString([]byte(GenerateHmac(token.EncodedHeader+"."+token.EncodedPayload, key))) == token.EncodedSignature {
+		return true
+	}
+	return false
+}
+
+func GenerateHmac(input string, key string) string {
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(input))
 	return string(mac.Sum(nil))
 }
 
 func VerifyTokenSignature(token string, key string) bool { // compatible with result from generateHmac()
-	delimiter := strings.LastIndex(token, ".")
-	if delimiter == -1 {
+	var jwt JsonWebToken
+	err := jwt.DecodeFromFull(token)
+	if err != nil {
 		return false
+	} else {
+		return jwt.CheckSignature(key)
 	}
-	message := token[:delimiter]
-	messageMAC := token[delimiter+1:]
-	mac := hmac.New(sha256.New, []byte(key))
-	mac.Write([]byte(message))
-	expectedMAC := mac.Sum(nil)
-	if strings.Compare(messageMAC, base64.RawURLEncoding.EncodeToString(expectedMAC)) == 0 {
-		return true
-	}
-	return false
 }
 
 func ExtractFromToken(token string, claim string) string { // TODO remove white space sensitivity
