@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -41,8 +42,9 @@ type searchData_t struct { // searchData_t defined in cparserlib.h
 	foundNodeHandle int64     // defined as long in cparserlib.h
 }
 
-const theAgtSecret = "averysecretkeyvalue1" //shared with agt-server
-const theAtSecret = "averysecretkeyvalue2"  //not shared
+var agtKey string
+
+const theAtSecret = "averysecretkeyvalue2" //not shared
 
 type NoScopePayload struct {
 	Context string `json:"context"`
@@ -118,6 +120,19 @@ func initVssFile() bool {
 	}
 
 	return true
+}
+
+func initKey(pubDirectory string) {
+	pubFile, err := os.Open(pubDirectory) // Same as Private Key
+	if err != nil {
+		utils.Error.Printf("Error loading public agt key")
+	}
+	pubFileInfo, _ := pubFile.Stat()
+	size := pubFileInfo.Size()
+	pubBytes := make([]byte, size)
+	pubBuffer := bufio.NewReader(pubFile)
+	_, err = pubBuffer.Read(pubBytes)
+	agtKey = string(pubBytes)
 }
 
 func makeAtServerHandler(serverChannel chan string) func(http.ResponseWriter, *http.Request) {
@@ -283,8 +298,9 @@ func tokenValidationResponse(input string) string {
 	}
 	var atValidatePayload AtValidatePayload
 	extractAtValidatePayloadLevel1(inputMap, &atValidatePayload)
-	if utils.VerifyTokenSignature(atValidatePayload.Token, theAtSecret) == false {
-		utils.Info.Printf("tokenValidationResponse:invalid signature=%s", atValidatePayload.Token)
+	err = utils.VerifyTokenSignature(atValidatePayload.Token, theAtSecret)
+	if err != nil {
+		utils.Info.Printf("tokenValidationResponse:invalid signature, error= %s, token=%s", err, atValidatePayload.Token)
 		return `{"validation":"-2"}`
 	}
 	purpose := utils.ExtractFromToken(atValidatePayload.Token, "pur")
@@ -455,8 +471,9 @@ func validateRequest(payload AtGenPayload) (bool, string) {
 		utils.Info.Printf("validateRequest:incorrect VIN=%s", payload.Agt.Vin)
 		return false, `{"error": "Incorrect vehicle identifiction"}`
 	}
-	if utils.VerifyTokenSignature(payload.Token, theAgtSecret) == false {
-		utils.Info.Printf("validateRequest:invalid signature=%s", payload.Token)
+	err := utils.VerifyTokenSignature(payload.Token, agtKey)
+	if err != nil {
+		utils.Info.Printf("validateRequest:invalid signature, error: %s, token:%s", err, payload.Token)
 		return false, `{"error": "AG token signature validation failed"}`
 	}
 	iat, err := strconv.Atoi(payload.Agt.Iat)
@@ -832,6 +849,7 @@ func main() {
 	initPurposelist()
 	initScopeList()
 	initVssFile()
+	initKey("security_keys/rsa_public_key.pem")
 
 	go initAtServer(serverChan, muxServer)
 

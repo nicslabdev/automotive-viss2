@@ -9,6 +9,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -23,7 +24,12 @@ import (
 	"github.com/akamensky/argparse"
 )
 
-const theAgtSecret = "averysecretkeyvalue1" // shared with at-server
+type KeySet struct {
+	PrvKey string
+	PubKey string
+}
+
+var keySet KeySet
 
 type Payload struct {
 	Vin     string `json:"vin"`
@@ -65,6 +71,32 @@ func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
 	agtServerHandler := makeAgtServerHandler(serverChannel)
 	muxServer.HandleFunc("/agtserver", agtServerHandler)
 	utils.Error.Fatal(http.ListenAndServe(":7500", muxServer))
+}
+
+func initKey(prvDirectory string, pubDirectory string) {
+	prvFile, err := os.Open(prvDirectory) // Open pem file containing PEM block
+	if err != nil {
+		utils.Error.Printf("Error loading private key")
+		return
+	}
+	prvFileInfo, _ := prvFile.Stat() // Creates a buffer to read all the data in the file
+	size := prvFileInfo.Size()
+	prvBytes := make([]byte, size)
+	prvBuffer := bufio.NewReader(prvFile)
+	_, err = prvBuffer.Read(prvBytes)
+	keySet.PrvKey = string(prvBytes) // Saves Private Key in PEM format
+
+	pubFile, err := os.Open(pubDirectory) // Same as Private Key
+	if err != nil {
+		utils.Error.Printf("Error loading public key")
+		return
+	}
+	pubFileInfo, _ := pubFile.Stat()
+	size = pubFileInfo.Size()
+	pubBytes := make([]byte, size)
+	pubBuffer := bufio.NewReader(pubFile)
+	_, err = pubBuffer.Read(pubBytes)
+	keySet.PubKey = string(pubBytes)
 }
 
 func generateResponse(input string) string {
@@ -134,7 +166,7 @@ func generateAgt(payload Payload) string {
 		exp = iat + 7*24*60*60 // 1 week
 	}
 	var jwtoken utils.JsonWebToken
-	jwtoken.SetHeader("HS256")
+	jwtoken.SetHeader("RS256")
 	jwtoken.AddClaim("vin", payload.Vin)
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))
@@ -147,7 +179,8 @@ func generateAgt(payload Payload) string {
 	utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
 	utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
 	jwtoken.Encode()
-	jwtoken.Sign(theAgtSecret)
+
+	jwtoken.Sign(keySet.PrvKey)
 	return `{"token":"` + jwtoken.GetFullToken() + `"}`
 }
 
@@ -170,6 +203,7 @@ func main() {
 	utils.InitLog("agtserver-log.txt", "./logs", *logFile, *logLevel)
 	serverChan := make(chan string)
 	muxServer := http.NewServeMux()
+	initKey("security_keys/rsa_private_key.pem", "security_keys/rsa_public_key.pem")
 
 	go initAgtServer(serverChan, muxServer)
 
