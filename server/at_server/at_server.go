@@ -303,7 +303,7 @@ func tokenValidationResponse(input string) string {
 		utils.Info.Printf("tokenValidationResponse:invalid signature, error= %s, token=%s", err, atValidatePayload.Token)
 		return `{"validation":"-2"}`
 	}
-	purpose := utils.ExtractFromToken(atValidatePayload.Token, "pur")
+	purpose := utils.ExtractFromToken(atValidatePayload.Token, "scp")
 	res := validateRequestAccess(purpose, atValidatePayload.Action, atValidatePayload.Paths)
 	if res != 0 {
 		utils.Info.Printf("validateRequestAccess fails with result=%d", res)
@@ -509,7 +509,7 @@ func generateAt(payload AtGenPayload) string {
 	iat := int(time.Now().Unix())
 	exp := iat + 1*60*60 // 1 hour
 	var jwtoken utils.JsonWebToken
-	jwtoken.SetHeader(payload.Agt.Alg)
+	jwtoken.SetHeader("HS256")
 	//jwtoken.AddClaim("vin", AtGenPayload.Agt.Vin)
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))

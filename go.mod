@@ -6,13 +6,15 @@ go 1.16
 //replace github.com/MEAE-GOT/WAII/utils => github.com/MagnusGun/WAII/utils master
 //replace github.com/MEAE-GOT/WAII/utils => ./utils
 //replace (
-//	github.com/GENIVI/vss-tools/binary/go_parser/datamodel => /home/ulfbjorkengren/Proj/genivi/vss-tools/binary/go_parser/datamodel
-//	github.com/GENIVI/vss-tools/binary/go_parser/parserlib => /home/ulfbjorkengren/Proj/genivi/vss-tools/binary/go_parser/parserlib
+//	github.com/COVESA/vss-tools/binary/go_parser/datamodel => /home/ulfbjorkengren/Proj/covesa/vss-tools/binary/go_parser/datamodel
+//	github.com/COVESA/vss-tools/binary/go_parser/parserlib => /home/ulfbjorkengren/Proj/covesa/vss-tools/binary/go_parser/parserlib
 //)
 
+//replace github.com/MEAE-GOT/WAII/protobuf/protoc-out => ./protobuf/protoc-out
+
 require (
-	github.com/GENIVI/vss-tools/binary/go_parser/datamodel v0.0.0-20210929092901-22d9cea1ef33
-	github.com/GENIVI/vss-tools/binary/go_parser/parserlib v0.0.0-20210929092901-22d9cea1ef33
+	github.com/COVESA/vss-tools/binary/go_parser/datamodel v0.0.0-20220104185813-cad8492de65f
+	github.com/COVESA/vss-tools/binary/go_parser/parserlib v0.0.0-20220104185813-cad8492de65f
 	github.com/akamensky/argparse v1.3.1
 	github.com/eclipse/paho.mqtt.golang v1.3.5
 	github.com/golang/protobuf v1.5.2
@@ -25,4 +27,5 @@ require (
 	golang.org/x/text v0.3.7 // indirect
 	google.golang.org/genproto v0.0.0-20211019152133-63b7e35f4404 // indirect
 	google.golang.org/grpc v1.41.0
+	google.golang.org/protobuf v1.27.1
 )
