@@ -35,7 +35,7 @@ type Payload struct {
 	Vin     string `json:"vin"`
 	Context string `json:"context"`
 	Proof   string `json:"proof"`
-	Key     string `json:"key"`
+	Token   string `json:"token"`
 }
 
 func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *http.Request) {
@@ -76,7 +76,7 @@ func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
 func initKey(prvDirectory string, pubDirectory string) {
 	prvFile, err := os.Open(prvDirectory) // Open pem file containing PEM block
 	if err != nil {
-		utils.Error.Printf("Error loading private key")
+		utils.Error.Printf("Error loading private key, should generate new keypair")
 		return
 	}
 	prvFileInfo, _ := prvFile.Stat() // Creates a buffer to read all the data in the file
@@ -88,7 +88,7 @@ func initKey(prvDirectory string, pubDirectory string) {
 
 	pubFile, err := os.Open(pubDirectory) // Same as Private Key
 	if err != nil {
-		utils.Error.Printf("Error loading public key")
+		utils.Error.Printf("Error loading public key, generating one")
 		return
 	}
 	pubFileInfo, _ := pubFile.Stat()
@@ -101,12 +101,12 @@ func initKey(prvDirectory string, pubDirectory string) {
 
 func generateResponse(input string) string {
 	var payload Payload
-	err := json.Unmarshal([]byte(input), &payload)
+	err := json.Unmarshal([]byte(input), &payload) // Unmarshal json received
 	if err != nil {
-		utils.Error.Printf("generateResponse:error input=%s", input)
+		utils.Error.Printf("generateResponse:error: %s ; input=%s", err, input)
 		return `{"error": "Client request malformed"}`
 	}
-	if authenticateClient(payload) == true {
+	if authenticateClient(payload) == true { // If unmarshall is succesful, proceeds to authenticate the client
 		return generateAgt(payload)
 	}
 	return `{"error": "Client authentication failed"}`
@@ -147,7 +147,7 @@ func checkRoles(context string) bool {
 }
 
 func authenticateClient(payload Payload) bool {
-	if checkRoles(payload.Context) == true && payload.Proof == "ABC" { // a bit too simple validation...
+	if checkRoles(payload.Context) == true && payload.Proof == "ABC" { // a bit too simple validation... Client should prove he is who he says he is. Proof of possesion now extist, authentication not.
 		return true
 	}
 	return false
@@ -162,17 +162,36 @@ func generateAgt(payload Payload) string {
 	uuid = uuid[:len(uuid)-1] // remove '\n' char
 	iat := int(time.Now().Unix())
 	exp := iat + 4*60*60 // 4 hours
-	if len(payload.Key) != 0 {
-		exp = iat + 7*24*60*60 // 1 week
-	}
 	var jwtoken utils.JsonWebToken
+	var pub string // If pop is not correct, AG Token is not given, if it is correct, long term AGT is given
+	if len(payload.Token) != 0 {
+		var popJwt utils.PopToken
+		err = popJwt.Unmarshal(payload.Token)
+		if err != nil {
+			utils.Error.Printf("generateAgt: Error unmarshalling pop, err= %s", err)
+			return `{"error": "Invalid pop token received"}`
+		}
+		jwtoken.AddClaim("pub", `{"jwk":`+popJwt.MarshallJwk()+`}`)
+		popIat, err := strconv.Atoi(popJwt.Claims["iat"])
+		if err != nil || popIat < iat-90 || popIat > iat+90 {
+			utils.Error.Printf("generateAgt: Iat checking failed")
+			return `{"error": "Invalid pop token iat"}`
+		}
+		err = popJwt.CheckSignature()
+		if err != nil {
+			utils.Error.Printf("generateAgt: Error checking pop signature, err= %s", err)
+			return `{"error": "Invalid pop token signature"}`
+		}
+		exp = iat + 7*24*60*60 // 1 week
+		//jwtoken.AddClaim("jwk", popJwt.MarshallJwt())
+	}
 	jwtoken.SetHeader("RS256")
 	jwtoken.AddClaim("vin", payload.Vin)
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))
 	jwtoken.AddClaim("clx", payload.Context)
-	if len(payload.Key) != 0 {
-		jwtoken.AddClaim("pub", payload.Key)
+	if len(pub) != 0 {
+		jwtoken.AddClaim("pub", pub)
 	}
 	jwtoken.AddClaim("aud", "w3org/gen2")
 	jwtoken.AddClaim("jti", string(uuid))

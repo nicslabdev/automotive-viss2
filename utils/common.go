@@ -9,16 +9,10 @@
 package utils
 
 import (
-	"crypto"
 	"crypto/hmac"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
-	"errors"
 	"net"
 	"os"
 	"strconv"
@@ -38,15 +32,6 @@ type TranspRegResponse struct {
 	Portnum int
 	Urlpath string
 	Mgrid   int
-}
-
-type JsonWebToken struct {
-	Header           string
-	Payload          string
-	EncodedHeader    string
-	EncodedPayload   string
-	EncodedSignature string
-	EncodedToken     string
 }
 
 func GetServerIP() string {
@@ -100,142 +85,6 @@ func UrlToPath(url string) string {
 func PathToUrl(path string) string {
 	var url string = strings.Replace(path, ".", "/", -1)
 	return "/" + url
-}
-
-func (token *JsonWebToken) SetHeader(algorithm string) {
-	token.Header = `{"alg":"` + algorithm + `","typ":"JWT"}`
-}
-
-func (token *JsonWebToken) AddClaim(key string, value string) {
-	if token.Payload == "" {
-		token.Payload = `{"` + key + `":"` + value + `"}`
-	} else {
-		token.Payload = token.Payload[:len(token.Payload)-1] + `,"` + key + `":"` + value + `"}`
-	}
-}
-
-func (token *JsonWebToken) Encode() {
-	token.EncodedHeader = base64.RawURLEncoding.EncodeToString([]byte(token.Header))
-	token.EncodedPayload = base64.RawURLEncoding.EncodeToString([]byte(token.Payload))
-}
-
-func (token *JsonWebToken) Sign(key string) error {
-	token.Encode()
-	token.EncodedToken = token.EncodedHeader + "." + token.EncodedPayload
-	if strings.Contains(token.Header, `HS256`) {
-		token.EncodedSignature = base64.RawURLEncoding.EncodeToString([]byte(GenerateHmac(token.EncodedToken, key)))
-	} else if strings.Contains(token.Header, `RS256`) { //RSASSA-PKCS1-v1_5 + SHA-256
-		// Obtains private key in format rsa.PrivateKey from string in PEM format. Includes error managing
-		pem_block, _ := pem.Decode([]byte(key))
-		if pem_block == nil {
-			return errors.New("Private key not found or is not in pem format")
-		}
-		if pem_block.Type != "RSA PRIVATE KEY" {
-			return errors.New("Invalid private key, wrong type")
-		}
-		privKey, err := x509.ParsePKCS1PrivateKey(pem_block.Bytes)
-		if err != nil {
-			parsedKey_gen, err := x509.ParsePKCS8PrivateKey(pem_block.Bytes)
-			if err != nil {
-				return err //errors.New("Unable to parse RSA private key")
-			}
-			privKey = parsedKey_gen.(*rsa.PrivateKey)
-		}
-		// Hashes header + payload
-		msgHasher := sha256.New()
-		msgHasher.Write([]byte(token.EncodedToken))
-		msgHash := msgHasher.Sum(nil)
-		// privKey is our rsa.PrivateKey. Proceeds to sign
-		signature, err := rsa.SignPKCS1v15(rand.Reader, privKey, crypto.SHA256, msgHash)
-		if err != nil {
-			return err
-		}
-		token.EncodedSignature = base64.RawURLEncoding.EncodeToString(signature)
-		//} else if strings.Contains(token.Header, `ES256`) { //ECDSA: P-256 + SHA-256
-		//block, _ := pem.Decode([]byte(key))
-		//parseResult, _ := x509.ParsePKCS8PrivateKey(block.Bytes)
-		//priv_key := parseResult.(*rsa.PrivateKey)
-	} else {
-		return errors.New("Token signature failed. No compatible alg found on header")
-	}
-	token.EncodedToken = token.EncodedToken + "." + token.EncodedSignature
-	return nil
-}
-
-func (token JsonWebToken) GetFullToken() string {
-	return token.EncodedToken
-}
-
-func (token JsonWebToken) GetHeader() string {
-	return token.Header
-}
-
-func (token JsonWebToken) GetPayload() string {
-	return token.Payload
-}
-
-func (token *JsonWebToken) DecodeFromFull(input string) error {
-	parts := strings.Split(input, ".")
-	if len(parts) != 3 {
-		return errors.New("JWT not composed by 3 parts")
-	}
-	token.EncodedToken = input
-	token.EncodedHeader = parts[0]
-	token.EncodedPayload = parts[1]
-	token.EncodedSignature = parts[2]
-	header, err := base64.RawURLEncoding.DecodeString(token.EncodedHeader)
-	if err != nil {
-		return err
-	}
-	token.Header = string(header)
-	payload, err := base64.RawURLEncoding.DecodeString(token.EncodedPayload)
-	if err != nil {
-		return err
-	}
-	token.Payload = string(payload)
-	return nil
-}
-
-func (token JsonWebToken) CheckSignature(key string) error {
-	if strings.Contains(token.Header, `HS256`) {
-		if base64.RawURLEncoding.EncodeToString([]byte(GenerateHmac(token.EncodedHeader+"."+token.EncodedPayload, key))) == token.EncodedSignature {
-			return nil
-		} else {
-			return errors.New("Invalid HS256 Signature")
-		}
-	} else if strings.Contains(token.Header, `RS256`) {
-		// Obtains public key block from string
-		pubBlock, _ := pem.Decode([]byte(key))
-		if pubBlock == nil {
-			return errors.New("Private key not found or is not in pem format")
-		}
-		if pubBlock.Type != "PUBLIC KEY" {
-			return errors.New("Invalid public key, wrong type")
-		}
-		// Parses PKCS1 and PKIX public keys
-		pubKey, err := x509.ParsePKCS1PublicKey(pubBlock.Bytes)
-		if err != nil {
-			parsedKeyGen, err := x509.ParsePKIXPublicKey(pubBlock.Bytes)
-			if err != nil {
-				return errors.New("Unable to parse PublicKey")
-			}
-			pubKey = parsedKeyGen.(*rsa.PublicKey)
-		}
-		//Checks signature ParsePKIXPublicKey
-		msgHasher := sha256.New()
-		msgHasher.Write([]byte(token.EncodedHeader + "." + token.EncodedPayload))
-		msgHash := msgHasher.Sum(nil)
-		signature, err := base64.RawURLEncoding.DecodeString(token.EncodedSignature)
-		if err != nil {
-			return err
-		}
-		err = rsa.VerifyPKCS1v15(pubKey, crypto.SHA256, msgHash, signature)
-		if err != nil {
-			return err
-		}
-		return nil
-	}
-	return errors.New("Used signing algorithm not compatible")
 }
 
 func GenerateHmac(input string, key string) string {
