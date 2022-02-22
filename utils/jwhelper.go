@@ -10,6 +10,8 @@ package utils
 
 import (
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -21,19 +23,6 @@ import (
 	"reflect"
 	"strings"
 )
-
-type JsonWebToken struct {
-	Header           string
-	Payload          string
-	EncodedHeader    string
-	EncodedPayload   string
-	EncodedSignature string
-	EncodedToken     string
-}
-
-func (token *JsonWebToken) SetHeader(algorithm string) {
-	token.Header = `{"alg":"` + algorithm + `","typ":"JWT"}`
-}
 
 // Gets Json string (or nothing) and adds received key and value, if it doesnt receive a value or key, it does nothing
 func JsonRecursiveMarshall(key string, value string, jplain *string) {
@@ -50,12 +39,20 @@ func JsonRecursiveMarshall(key string, value string, jplain *string) {
 	}
 }
 
+type JsonWebToken struct {
+	Header           string
+	Payload          string
+	EncodedHeader    string
+	EncodedPayload   string
+	EncodedSignature string
+	EncodedToken     string
+}
+
+func (token *JsonWebToken) SetHeader(algorithm string) {
+	token.Header = `{"alg":"` + algorithm + `","typ":"JWT"}`
+}
+
 func (token *JsonWebToken) AddClaim(key string, value string) {
-	/*if token.Payload == "" {
-		token.Payload = `{"` + key + `":"` + value + `"}`
-	} else {
-		token.Payload = token.Payload[:len(token.Payload)-1] + `,"` + key + `":"` + value + `"}`
-	}*/
 	JsonRecursiveMarshall(key, value, &token.Payload)
 }
 
@@ -64,7 +61,7 @@ func (token *JsonWebToken) Encode() {
 	token.EncodedPayload = base64.RawURLEncoding.EncodeToString([]byte(token.Payload))
 }
 
-// Signs the token. In case of HS signature, plain text key must be given. In case of RSA signature, a string must include a PEM format text including the private key, or *rsa.privateKey can be given
+// Signs the token. In case of HS signature, string key must be given. In case of RSA signature, string must be PEM format text or *rsa/ecdsa.privateKey
 func (token *JsonWebToken) Sign(key interface{}) error {
 	token.Encode()
 	token.EncodedToken = token.EncodedHeader + "." + token.EncodedPayload
@@ -101,10 +98,42 @@ func (token *JsonWebToken) Sign(key interface{}) error {
 			return err
 		}
 		token.EncodedSignature = base64.RawURLEncoding.EncodeToString(signature)
-		//} else if strings.Contains(token.Header, `ES256`) { //ECDSA: P-256 + SHA-256
-		//block, _ := pem.Decode([]byte(key))
-		//parseResult, _ := x509.ParsePKCS8PrivateKey(block.Bytes)
-		//priv_key := parseResult.(*rsa.PrivateKey)
+	} else if strings.Contains(token.Header, `ES256`) { //ECDSA: P-256 + SHA-256
+		var privKey *ecdsa.PrivateKey
+		switch typ := key.(type) {
+		case *ecdsa.PrivateKey:
+			privKey, _ = key.(*ecdsa.PrivateKey)
+		case string:
+			strKey, _ := key.(string)
+			err := PemDecodeECDSA(strKey, privKey)
+			if err != nil {
+				return err
+			}
+		default:
+			return errors.New(fmt.Sprintf("File jwthelper.go: JsonWebToken.Sign: Error. Key type given is not correct: %T", typ))
+		}
+		msgHasher := md5.New()
+		msgHasher.Write([]byte(token.EncodedToken))
+		msgHash := msgHasher.Sum(nil)
+		// Must be one of those or both
+		sign, err := ecdsa.SignASN1(rand.Reader, privKey, msgHash)
+		if err != nil {
+			return err
+		}
+		token.EncodedSignature = base64.RawURLEncoding.EncodeToString(sign)
+		//Signature acording to RFC7518: https://datatracker.ietf.org/doc/html/rfc7518#section-3.4
+		// rCoordx, sProof, err := ecdsa.Sign(rand.Reader, privKey, msgHash)
+		// if err != nil {
+		// 	return err
+		// }
+		// rBytes := rCoordx.Bytes() // Returns big endian octet seq
+		// sBytes := sProof.Bytes()
+		// buf := bytes.NewBuffer(rBytes)
+		// buf.Write(sBytes)
+		// var sign []byte
+		// buf.Read(sign)
+		// token.EncodedSignature = base64.RawURLEncoding.EncodeToString(sign)
+
 	} else {
 		return errors.New("Token signature failed. No compatible alg found on header")
 	}

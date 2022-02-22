@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -34,7 +35,7 @@ func PemDecodeRSA(pemKey string, privKey *rsa.PrivateKey) error {
 		return errors.New("Private key not found or is not in pem format")
 	}
 	if pemBlock.Type != "RSA PRIVATE KEY" {
-		return errors.New("Invalid private key, wrong type")
+		return errors.New(fmt.Sprintf("Invalid private key, wrong type: %T", pemBlock.Type))
 	}
 	// Parses obtained pem block
 	var parsedKey interface{} //Still dont know what key type we need to parse
@@ -50,6 +51,24 @@ func PemDecodeRSA(pemKey string, privKey *rsa.PrivateKey) error {
 	return nil
 }
 
+// Gets ECDSA key in pem format and decodes it into ecdsa.PrivateKey
+func PemDecodeECDSA(pemKey string, privKey *ecdsa.PrivateKey) error {
+	pemBlock, _ := pem.Decode([]byte(pemKey))
+	if pemBlock == nil {
+		return errors.New("Private key not found or is not in pem format")
+	}
+	if pemBlock.Type != "RSA PRIVATE KEY" {
+		return errors.New(fmt.Sprintf("Invalid private key, wrong type: %T", pemBlock.Type))
+	}
+	var parsedKey interface{}
+	parsedKey, err := x509.ParseECPrivateKey(pemBlock.Bytes)
+	if err != nil {
+		parsedKey, err = x509.ParsePKCS8PrivateKey(pemBlock.Bytes)
+	}
+	privKey = parsedKey.(*ecdsa.PrivateKey)
+	return nil
+}
+
 // Generates RSA private key of given size
 func GenRsaKey(size int, privKey **rsa.PrivateKey) error {
 	if size%8 != 0 || size < 2048 {
@@ -60,6 +79,19 @@ func GenRsaKey(size int, privKey **rsa.PrivateKey) error {
 	if err != nil {
 		return err
 	}
+	return nil
+}
+
+func GenEcdsaKey(size int, privKey **ecdsa.PrivateKey) error {
+	if size%8 != 0 || size < 2048 {
+		size = 2048
+	}
+
+	auxKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return err
+	}
+	*privKey = auxKey
 	return nil
 }
 
@@ -92,34 +124,92 @@ func PemEncodeRSA(privKey *rsa.PrivateKey) (strPrivKey string, strPubKey string,
 	return
 }
 
-// Export RSA KeyPair to files named as given
-func ExportKeyPair(privKey *rsa.PrivateKey, privFileName string, pubFileName string) error {
+// Returns ECDSA Keys as string in PEM format
+func PemEncodeECDSA(privKey *ecdsa.PrivateKey) (strPrivKey string, strPubKey string, err error) {
+	byteKey, _ := x509.MarshalECPrivateKey(privKey)
 	privBlock := pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privKey),
+		Type:  "EC PRIVATE KEY",
+		Bytes: byteKey,
 	}
-	privFile, err := os.Create(privFileName + ".rsa")
-	if err != nil {
-		return err
+	buf := bytes.NewBuffer(nil)
+	if err = pem.Encode(buf, &privBlock); err != nil {
+		return
 	}
-	err = pem.Encode(privFile, &privBlock)
-	if err != nil {
-		return err
-	}
+	strPrivKey = buf.String()
 
+	byteKey, _ = x509.MarshalPKIXPublicKey(&privKey.PublicKey)
 	pubBlock := pem.Block{
-		Type:  "RSA PUBLIC KEY",
-		Bytes: x509.MarshalPKCS1PublicKey(&privKey.PublicKey),
+		Type:  "EC PUBLIC KEY",
+		Bytes: byteKey,
 	}
-	pubFile, err := os.Create(pubFileName + ".rsa.pub")
-	if err != nil {
-		return err
+	if err = pem.Encode(buf, &pubBlock); err != nil {
+		return
 	}
-	err = pem.Encode(pubFile, &pubBlock)
-	if err != nil {
-		return err
-	}
+	strPubKey = buf.String()
+	return
+}
 
+// Export KeyPair to files named as given (ECDSA and RSA supported, pointers to privKey must be given)
+func ExportKeyPair(privKey interface{}, privFileName string, pubFileName string) error {
+	switch typ := privKey.(type) {
+	case *rsa.PrivateKey:
+		rsaPriv, _ := privKey.(*rsa.PrivateKey)
+		privBlock := pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(rsaPriv),
+		}
+		privFile, err := os.Create(privFileName + ".rsa")
+		if err != nil {
+			return err
+		}
+		err = pem.Encode(privFile, &privBlock)
+		if err != nil {
+			return err
+		}
+
+		pubBlock := pem.Block{
+			Type:  "RSA PUBLIC KEY",
+			Bytes: x509.MarshalPKCS1PublicKey(&rsaPriv.PublicKey),
+		}
+		pubFile, err := os.Create(pubFileName + ".rsa.pub")
+		if err != nil {
+			return err
+		}
+		err = pem.Encode(pubFile, &pubBlock)
+		if err != nil {
+			return err
+		}
+	case *ecdsa.PrivateKey:
+		ecdsaPriv, _ := privKey.(*ecdsa.PrivateKey)
+		ecdsaByt, _ := x509.MarshalECPrivateKey(ecdsaPriv)
+		privBlock := pem.Block{
+			Type:  "EC PRIVATE KEY",
+			Bytes: ecdsaByt,
+		}
+		privFile, err := os.Create(privFileName + ".rsa")
+		if err != nil {
+			return err
+		}
+		err = pem.Encode(privFile, &privBlock)
+		if err != nil {
+			return err
+		}
+		ecdsaByt, _ = x509.MarshalPKIXPublicKey(&ecdsaPriv.PublicKey)
+		pubBlock := pem.Block{
+			Type:  "RSA PUBLIC KEY",
+			Bytes: ecdsaByt,
+		}
+		pubFile, err := os.Create(pubFileName + ".rsa.pub")
+		if err != nil {
+			return err
+		}
+		err = pem.Encode(pubFile, &pubBlock)
+		if err != nil {
+			return err
+		}
+	default:
+		return (errors.New(fmt.Sprintf("Cannot generate key of type: %T", typ)))
+	}
 	return nil
 }
 
@@ -128,13 +218,55 @@ type Cnf struct {
 	Jwt JsonWebKey `json:"jwk"`
 }
 type JsonWebKey struct {
+	Thumb  string `json:"-"`
 	Type   string `json:"kty"`
-	Use    string `json:"use"`
-	PubMod string `json:"n"`
-	PubExp string `json:"e"`
+	Use    string `json:"use,omitempty"`
+	PubMod string `json:"n,omitempty"`     // RSA
+	PubExp string `json:"e,omitempty"`     // RSA
+	Curve  string `json:"curve,omitempty"` //ECDSA
+	Xcoord string `json:"x,omitempty"`     //ECDSA
+	Ycoord string `json:"y,omitempty"`     //ECDSA
 }
 
-//	Gets the received JWK and unmarshalls it into the defined struct, returns error if fails to unmarshall
+// Initializes json web key from public key
+func (jkey *JsonWebKey) Initialize(pubKey crypto.PublicKey, use string) error {
+	//jkey.Use = "sig"
+	jkey.Use = use
+	jkey.Type = ""
+	if _, ok := pubKey.(rsa.PublicKey); ok {
+		jkey.Type = "RSA"
+	}
+	if _, ok := pubKey.(ecdsa.PublicKey); ok {
+		jkey.Type = "ECDSA"
+	}
+	switch jkey.Type {
+	case "RSA":
+		rsaPubKey, _ := pubKey.(rsa.PublicKey)
+		jkey.PubExp = base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(rsaPubKey.E)))
+		jkey.PubMod = base64.RawURLEncoding.EncodeToString(rsaPubKey.N.Bytes())
+		// Generates thumberprint
+		JsonRecursiveMarshall("e", jkey.PubExp, &jkey.Thumb)
+		JsonRecursiveMarshall("kty", jkey.Type, &jkey.Thumb)
+		JsonRecursiveMarshall("n", jkey.PubMod, &jkey.Thumb)
+		fmt.Printf("\n" + jkey.Thumb + "\n")
+	case "ECDSA":
+		ecdsaPubKey, _ := pubKey.(ecdsa.PublicKey)
+		jkey.Curve = fmt.Sprintf("P-%v", ecdsaPubKey.Curve.Params().BitSize)
+		jkey.Xcoord = ecdsaPubKey.X.String()
+		jkey.Ycoord = ecdsaPubKey.Y.String()
+		// Generates thumberprint
+		JsonRecursiveMarshall("crv", jkey.Curve, &jkey.Thumb)
+		JsonRecursiveMarshall("kty", jkey.Type, &jkey.Thumb)
+		JsonRecursiveMarshall("x", jkey.Xcoord, &jkey.Thumb)
+		JsonRecursiveMarshall("y", jkey.Ycoord, &jkey.Thumb)
+		fmt.Printf("\n" + jkey.Thumb + "\n")
+	default:
+		return errors.New("Invalid Key type, cannot initialize JWK")
+	}
+	return nil
+}
+
+//	Gets the received JWK and unmarshalls it, returns error if fails to unmarshall
 func (jkey *JsonWebKey) Unmarshall(rcv string) error {
 	return json.Unmarshal([]byte(rcv), jkey)
 }
@@ -229,7 +361,7 @@ func (popToken PopToken) GenerateToken(privKey crypto.PrivateKey) (string, error
 	return popToken.jwt.GetFullToken(), nil
 }
 
-func (popToken *PopToken) GetPublicKey() (rsa.PublicKey, error) {
+func (popToken PopToken) GetPublicKey() (rsa.PublicKey, error) {
 	var pubKey rsa.PublicKey
 	// Decode n and e
 	byteN, err := base64.RawURLEncoding.DecodeString(popToken.jsonWebKey.PubMod)
@@ -250,6 +382,10 @@ func (popToken *PopToken) GetPublicKey() (rsa.PublicKey, error) {
 		return pubKey, err
 	}
 	return pubKey, nil
+}
+
+func (popToken PopToken) GetUnmarshalledPublicKey() JsonWebKey {
+	return popToken.jsonWebKey
 }
 
 func (popToken *PopToken) CheckSignature() error {
@@ -288,8 +424,11 @@ func (popToken *PopToken) SetPublicKey(pubKey crypto.PublicKey) error {
 	return nil
 }
 
-// Marshall Jwk would generate a signed jwt used for pop using the claims and the key contained in the token
-// Actually pubkey can only be rsa.PublicKey. Code could be extended for using ECDSA signature.
-func (popToken *PopToken) MarshallJwk() string {
+func (popToken PopToken) Alg() string {
+	return popToken.alg
+}
+
+// Marshall Jwk returns the key marshalled
+func (popToken PopToken) MarshallJwk() string {
 	return popToken.jsonWebKey.Marshall()
 }

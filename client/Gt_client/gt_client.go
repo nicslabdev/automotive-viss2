@@ -203,11 +203,15 @@ func main() {
 					}
 					// If not using RSA signature for authentication, the request will be quite easy, just JSON plain text including the claims
 					if useRSA {
-						token, err := generatePopToken(privKey1)
+						//token, err := generatePopToken(privKey1)
+						//if err != nil {
+						//	fmt.Printf("Could not generate authentication token. RSA signature will not be used, error: %s\n", err)
+						var jKey utils.JsonWebKey
+						err := jKey.Initialize(privKey1.PublicKey, "sig")
 						if err != nil {
-							fmt.Printf("Could not generate authentication token. RSA signature will not be used, error: %s\n", err)
+							fmt.Printf("Could not generate key claim. RSA pubKey will not be sent")
 						} else {
-							AGTClaims.addAGTClaim("token", token)
+							AGTClaims.addAGTClaim("key", jKey.Marshall())
 						}
 					}
 					PostContent := AGTClaims.generateAgt()

@@ -32,11 +32,13 @@ type KeySet struct {
 var keySet KeySet
 
 type Payload struct {
-	Vin     string `json:"vin"`
-	Context string `json:"context"`
-	Proof   string `json:"proof"`
-	Token   string `json:"token"`
+	Vin     string           `json:"vin"`
+	Context string           `json:"context"`
+	Proof   string           `json:"proof"`
+	Key     utils.JsonWebKey `json:"key"`
 }
+
+var ChallengeCache map[string]Payload // jti is the map key
 
 func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
@@ -51,14 +53,14 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 				http.Error(w, "400 request unreadable.", 400)
 			} else {
 				utils.Info.Printf("agtServer:received POST request=%s\n", string(bodyBytes))
-				serverChannel <- string(bodyBytes)
-				response := <-serverChannel
+				serverChannel <- string(bodyBytes) // If everything works fine, sends to serverChannel the body
+				response := <-serverChannel        // Receives the response and sends it
 				utils.Info.Printf("agtServer:POST response=%s", response)
 				if len(response) == 0 {
 					http.Error(w, "400 bad input.", 400)
 				} else {
 					w.Header().Set("Access-Control-Allow-Origin", "*")
-					//				    w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Type", "application/json")
 					w.Write([]byte(response))
 				}
 			}
@@ -69,7 +71,7 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
 	utils.Info.Printf("initAtServer(): :7500/agtserver")
 	agtServerHandler := makeAgtServerHandler(serverChannel)
-	muxServer.HandleFunc("/agtserver", agtServerHandler)
+	muxServer.HandleFunc("/agtserver", agtServerHandler) // Only one url is supported: "/agtserver"
 	utils.Error.Fatal(http.ListenAndServe(":7500", muxServer))
 }
 
@@ -99,15 +101,26 @@ func initKey(prvDirectory string, pubDirectory string) {
 	keySet.PubKey = string(pubBytes)
 }
 
+// GenerateResponse must unmarshall the payload after checking what type of payload it is.
+// Can be simple agt request (resp : agt), long term agt request (resp: challenge) or proof of possesion (resp: lt agt)
 func generateResponse(input string) string {
 	var payload Payload
 	err := json.Unmarshal([]byte(input), &payload) // Unmarshal json received
 	if err != nil {
-		utils.Error.Printf("generateResponse:error: %s ; input=%s", err, input)
-		return `{"error": "Client request malformed"}`
+		var popToken utils.PopToken
+		err = popToken.Unmarshal(input)
+		if err != nil {
+			utils.Error.Printf("generateResponse:error: %s ; input=%s", err, input)
+			return `{"error": "Client request malformed"}`
+		}
+		return generateLTAgt(popToken)
 	}
 	if authenticateClient(payload) == true { // If unmarshall is succesful, proceeds to authenticate the client
-		return generateAgt(payload)
+		if payload.Key != (utils.JsonWebKey{}) {
+			return generateChallenge(payload)
+		} else {
+			return generateAgt(payload)
+		}
 	}
 	return `{"error": "Client authentication failed"}`
 }
@@ -143,7 +156,6 @@ func checkRoles(context string) bool {
 		return false
 	}
 	return true
-
 }
 
 func authenticateClient(payload Payload) bool {
@@ -151,6 +163,71 @@ func authenticateClient(payload Payload) bool {
 		return true
 	}
 	return false
+}
+
+//https://datatracker.ietf.org/doc/html/draft-fett-oauth-dpop-03#section-7
+// https://stackoverflow.com/questions/42588786/how-to-fingerprint-a-jwk
+
+// Delete cached data after some time (this data is deleted if a long term AGT is generated or if no POP is returned)
+func deleteTimer(mapId string, sec int) {
+	time.Sleep(time.Duration(sec) * time.Second)
+	if ChallengeCache != nil {
+		delete(ChallengeCache, mapId)
+	}
+}
+
+// Challenge consist in sending iat + uuid. Rest of claims are saved in a map.
+func generateChallenge(payload Payload) string {
+	// Saves data in the map
+	if ChallengeCache == nil {
+		ChallengeCache = make(map[string]Payload)
+	}
+	uuid, err := exec.Command("uuidgen").Output()
+	if err != nil {
+		utils.Error.Printf("generateAgt:Error generating uuid, err=%s", err)
+		return `{"error": "Internal error"}`
+	}
+	uuid = uuid[:len(uuid)-1]
+	ChallengeCache[string(uuid)] = payload
+	go deleteTimer(string(uuid), 10)
+
+	// Generates response from the data received
+	var response string
+	utils.JsonRecursiveMarshall("jti", string(uuid), &response)
+	return response
+}
+
+// Generates long term access token from valid pop
+func generateLTAgt(popToken utils.PopToken) string {
+	claims, ok := ChallengeCache[popToken.Claims["jti"]]
+	if !ok {
+		utils.Error.Printf("generateLTAgt: Jti auth expired or invalid")
+		return `{"error": "JTI expired or invalid"}`
+	}
+
+	if claims.Vin != popToken.Claims["vin"] || claims.Context != popToken.Claims["context"] {
+		utils.Error.Printf("generate LTAgt: Claims are not the same associated with jti")
+		return `{"error": "Claims received are not associated with that jti"}`
+	}
+
+	switch popToken.Alg() {
+	case "RS256":
+		if popToken.GetUnmarshalledPublicKey() != claims.Key {
+			utils.Error.Printf("generate LTAgt: PubKey received is not the same as cached")
+			return `{"error": "Key received is the associated with that jti"}`
+		}
+		if err := popToken.CheckSignature(); err != nil {
+			utils.Error.Printf("generate LTAgt: Invalid signature")
+			return `{"error": "Invalid signature"}`
+		}
+
+	//case "ES256":
+	default:
+		utils.Error.Printf("generate LTAgt: Invalid PopToken Algorithm")
+		return `{"error": "Invalid signature algorithm"}`
+	}
+
+	return "well done"
 }
 
 func generateAgt(payload Payload) string {
@@ -163,43 +240,19 @@ func generateAgt(payload Payload) string {
 	iat := int(time.Now().Unix())
 	exp := iat + 4*60*60 // 4 hours
 	var jwtoken utils.JsonWebToken
-	var pub string // If pop is not correct, AG Token is not given, if it is correct, long term AGT is given
-	if len(payload.Token) != 0 {
-		var popJwt utils.PopToken
-		err = popJwt.Unmarshal(payload.Token)
-		if err != nil {
-			utils.Error.Printf("generateAgt: Error unmarshalling pop, err= %s", err)
-			return `{"error": "Invalid pop token received"}`
-		}
-		jwtoken.AddClaim("pub", `{"jwk":`+popJwt.MarshallJwk()+`}`)
-		popIat, err := strconv.Atoi(popJwt.Claims["iat"])
-		if err != nil || popIat < iat-90 || popIat > iat+90 {
-			utils.Error.Printf("generateAgt: Iat checking failed")
-			return `{"error": "Invalid pop token iat"}`
-		}
-		err = popJwt.CheckSignature()
-		if err != nil {
-			utils.Error.Printf("generateAgt: Error checking pop signature, err= %s", err)
-			return `{"error": "Invalid pop token signature"}`
-		}
-		exp = iat + 7*24*60*60 // 1 week
-		//jwtoken.AddClaim("jwk", popJwt.MarshallJwt())
-	}
 	jwtoken.SetHeader("RS256")
 	jwtoken.AddClaim("vin", payload.Vin)
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))
 	jwtoken.AddClaim("clx", payload.Context)
-	if len(pub) != 0 {
-		jwtoken.AddClaim("pub", pub)
-	}
 	jwtoken.AddClaim("aud", "w3org/gen2")
 	jwtoken.AddClaim("jti", string(uuid))
 	utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
 	utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
-	jwtoken.Encode()
 
+	jwtoken.Encode()
 	jwtoken.Sign(keySet.PrvKey)
+
 	return `{"token":"` + jwtoken.GetFullToken() + `"}`
 }
 
@@ -220,8 +273,8 @@ func main() {
 	}
 
 	utils.InitLog("agtserver-log.txt", "./logs", *logFile, *logLevel)
-	serverChan := make(chan string)
-	muxServer := http.NewServeMux()
+	serverChan := make(chan string) // Communication between methods and dif process
+	muxServer := http.NewServeMux() // ServeMux for routing
 	initKey("security_keys/rsa_private_key.pem", "security_keys/rsa_public_key.pem")
 
 	go initAgtServer(serverChan, muxServer)
@@ -229,6 +282,7 @@ func main() {
 	for {
 		select {
 		case request := <-serverChan:
+			// Server is running concurrently, generateResponse is called when anything is received from it
 			response := generateResponse(request)
 			utils.Info.Printf("agtServer response=%s", response)
 			serverChan <- response
