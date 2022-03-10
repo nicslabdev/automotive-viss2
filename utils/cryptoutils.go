@@ -9,12 +9,15 @@
 package utils
 
 import (
+	"bufio"
 	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/md5"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -28,7 +31,7 @@ import (
 )
 
 // Gets rsa key in pem format and decodes it into rsa.privatekey
-func PemDecodeRSA(pemKey string, privKey *rsa.PrivateKey) error {
+func PemDecodeRSA(pemKey string, privKey **rsa.PrivateKey) error {
 	pemBlock, _ := pem.Decode([]byte(pemKey)) // Gets pem_block from raw key
 	// Checking key type and correct decodification
 	if pemBlock == nil {
@@ -47,17 +50,17 @@ func PemDecodeRSA(pemKey string, privKey *rsa.PrivateKey) error {
 		}
 	}
 	// Gets private key from parsed key
-	privKey = parsedKey.(*rsa.PrivateKey)
+	*privKey = parsedKey.(*rsa.PrivateKey)
 	return nil
 }
 
 // Gets ECDSA key in pem format and decodes it into ecdsa.PrivateKey
-func PemDecodeECDSA(pemKey string, privKey *ecdsa.PrivateKey) error {
+func PemDecodeECDSA(pemKey string, privKey **ecdsa.PrivateKey) error {
 	pemBlock, _ := pem.Decode([]byte(pemKey))
 	if pemBlock == nil {
 		return errors.New("Private key not found or is not in pem format")
 	}
-	if pemBlock.Type != "RSA PRIVATE KEY" {
+	if pemBlock.Type != "EC PRIVATE KEY" {
 		return errors.New(fmt.Sprintf("Invalid private key, wrong type: %T", pemBlock.Type))
 	}
 	var parsedKey interface{}
@@ -65,7 +68,7 @@ func PemDecodeECDSA(pemKey string, privKey *ecdsa.PrivateKey) error {
 	if err != nil {
 		parsedKey, err = x509.ParsePKCS8PrivateKey(pemBlock.Bytes)
 	}
-	privKey = parsedKey.(*ecdsa.PrivateKey)
+	*privKey = parsedKey.(*ecdsa.PrivateKey)
 	return nil
 }
 
@@ -82,17 +85,54 @@ func GenRsaKey(size int, privKey **rsa.PrivateKey) error {
 	return nil
 }
 
-func GenEcdsaKey(size int, privKey **ecdsa.PrivateKey) error {
-	if size%8 != 0 || size < 2048 {
-		size = 2048
-	}
-
-	auxKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+// Generates ECDSA private Key of Curve
+func GenEcdsaKey(curve elliptic.Curve, privKey **ecdsa.PrivateKey) error {
+	auxKey, err := ecdsa.GenerateKey(curve, rand.Reader)
 	if err != nil {
 		return err
 	}
 	*privKey = auxKey
 	return nil
+}
+
+// Gets rsa private key from pem file
+func ImportRsaKey(filename string, privKey **rsa.PrivateKey) error {
+	privFile, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	prvFileInfo, err := privFile.Stat() // Gets info of io
+	if err != nil {
+		return err
+	}
+	prvBytes := make([]byte, prvFileInfo.Size())
+	prvBuffer := bufio.NewReader(privFile)
+	_, err = prvBuffer.Read(prvBytes)
+	if err != nil {
+		return err
+	}
+	err = PemDecodeRSA(string(prvBytes), privKey)
+	return err
+}
+
+// Gets ecdsa private key from pem file
+func ImportEcdsaKey(filename string, privKey **ecdsa.PrivateKey) error {
+	privFile, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	prvFileInfo, err := privFile.Stat() // Gets info of io
+	if err != nil {
+		return err
+	}
+	prvBytes := make([]byte, prvFileInfo.Size())
+	prvBuffer := bufio.NewReader(privFile)
+	_, err = prvBuffer.Read(prvBytes)
+	if err != nil {
+		return err
+	}
+	err = PemDecodeECDSA(string(prvBytes), privKey)
+	return err
 }
 
 // Returns RSA Keys as string in PEM format
@@ -136,7 +176,7 @@ func PemEncodeECDSA(privKey *ecdsa.PrivateKey) (strPrivKey string, strPubKey str
 		return
 	}
 	strPrivKey = buf.String()
-
+	buf.Reset()
 	byteKey, _ = x509.MarshalPKIXPublicKey(&privKey.PublicKey)
 	pubBlock := pem.Block{
 		Type:  "EC PUBLIC KEY",
@@ -150,129 +190,149 @@ func PemEncodeECDSA(privKey *ecdsa.PrivateKey) (strPrivKey string, strPubKey str
 }
 
 // Export KeyPair to files named as given (ECDSA and RSA supported, pointers to privKey must be given)
-func ExportKeyPair(privKey interface{}, privFileName string, pubFileName string) error {
+func ExportKeyPair(privKey crypto.PrivateKey, privFileName string, pubFileName string) error {
 	switch typ := privKey.(type) {
 	case *rsa.PrivateKey:
 		rsaPriv, _ := privKey.(*rsa.PrivateKey)
-		privBlock := pem.Block{
-			Type:  "RSA PRIVATE KEY",
-			Bytes: x509.MarshalPKCS1PrivateKey(rsaPriv),
+		if privFileName != "" {
+			privBlock := pem.Block{
+				Type:  "RSA PRIVATE KEY",
+				Bytes: x509.MarshalPKCS1PrivateKey(rsaPriv),
+			}
+			privFile, err := os.Create(privFileName) //".rsa"
+			defer privFile.Close()
+			if err != nil {
+				return err
+			}
+			err = pem.Encode(privFile, &privBlock)
+			if err != nil {
+				return err
+			}
 		}
-		privFile, err := os.Create(privFileName + ".rsa")
-		if err != nil {
-			return err
-		}
-		err = pem.Encode(privFile, &privBlock)
-		if err != nil {
-			return err
+		if pubFileName != "" {
+			pubBlock := pem.Block{
+				Type:  "RSA PUBLIC KEY",
+				Bytes: x509.MarshalPKCS1PublicKey(&rsaPriv.PublicKey),
+			}
+			pubFile, err := os.Create(pubFileName) // + ".rsa.pub"
+			defer pubFile.Close()
+			if err != nil {
+				return err
+			}
+			err = pem.Encode(pubFile, &pubBlock)
+			if err != nil {
+				return err
+			}
 		}
 
-		pubBlock := pem.Block{
-			Type:  "RSA PUBLIC KEY",
-			Bytes: x509.MarshalPKCS1PublicKey(&rsaPriv.PublicKey),
-		}
-		pubFile, err := os.Create(pubFileName + ".rsa.pub")
-		if err != nil {
-			return err
-		}
-		err = pem.Encode(pubFile, &pubBlock)
-		if err != nil {
-			return err
-		}
 	case *ecdsa.PrivateKey:
 		ecdsaPriv, _ := privKey.(*ecdsa.PrivateKey)
-		ecdsaByt, _ := x509.MarshalECPrivateKey(ecdsaPriv)
-		privBlock := pem.Block{
-			Type:  "EC PRIVATE KEY",
-			Bytes: ecdsaByt,
+		if privFileName != "" {
+			ecdsaByt, _ := x509.MarshalECPrivateKey(ecdsaPriv)
+			privBlock := pem.Block{
+				Type:  "EC PRIVATE KEY",
+				Bytes: ecdsaByt,
+			}
+			privFile, err := os.Create(privFileName) //+ ".ec"
+			defer privFile.Close()
+			if err != nil {
+				return err
+			}
+			err = pem.Encode(privFile, &privBlock)
+			if err != nil {
+				return err
+			}
 		}
-		privFile, err := os.Create(privFileName + ".rsa")
-		if err != nil {
-			return err
-		}
-		err = pem.Encode(privFile, &privBlock)
-		if err != nil {
-			return err
-		}
-		ecdsaByt, _ = x509.MarshalPKIXPublicKey(&ecdsaPriv.PublicKey)
-		pubBlock := pem.Block{
-			Type:  "RSA PUBLIC KEY",
-			Bytes: ecdsaByt,
-		}
-		pubFile, err := os.Create(pubFileName + ".rsa.pub")
-		if err != nil {
-			return err
-		}
-		err = pem.Encode(pubFile, &pubBlock)
-		if err != nil {
-			return err
+		if pubFileName != "" {
+			ecdsaByt2, _ := x509.MarshalPKIXPublicKey(&ecdsaPriv.PublicKey)
+			pubBlock := pem.Block{
+				Type:  "EC PUBLIC KEY",
+				Bytes: ecdsaByt2,
+			}
+			pubFile, err := os.Create(pubFileName) // + ".ec.pub"
+			defer pubFile.Close()
+			if err != nil {
+				return err
+			}
+			err = pem.Encode(pubFile, &pubBlock)
+			if err != nil {
+				return err
+			}
 		}
 	default:
-		return (errors.New(fmt.Sprintf("Cannot generate key of type: %T", typ)))
+		return (errors.New(fmt.Sprintf("Key type not supported: %T", typ)))
 	}
 	return nil
 }
 
-// Implements all methods to create a "correct" Json Web Key according to RFC7517
-type Cnf struct {
-	Jwt JsonWebKey `json:"jwk"`
-}
+// Implements all methods to interact with JWK
 type JsonWebKey struct {
 	Thumb  string `json:"-"`
 	Type   string `json:"kty"`
 	Use    string `json:"use,omitempty"`
-	PubMod string `json:"n,omitempty"`     // RSA
-	PubExp string `json:"e,omitempty"`     // RSA
-	Curve  string `json:"curve,omitempty"` //ECDSA
-	Xcoord string `json:"x,omitempty"`     //ECDSA
-	Ycoord string `json:"y,omitempty"`     //ECDSA
+	PubMod string `json:"n,omitempty"`   // RSA
+	PubExp string `json:"e,omitempty"`   // RSA
+	Curve  string `json:"crv,omitempty"` //ECDSA
+	Xcoord string `json:"x,omitempty"`   //ECDSA
+	Ycoord string `json:"y,omitempty"`   //ECDSA
 }
 
 // Initializes json web key from public key
 func (jkey *JsonWebKey) Initialize(pubKey crypto.PublicKey, use string) error {
 	//jkey.Use = "sig"
 	jkey.Use = use
-	jkey.Type = ""
-	if _, ok := pubKey.(rsa.PublicKey); ok {
+	switch typ := pubKey.(type) {
+	case *rsa.PublicKey:
 		jkey.Type = "RSA"
+		rsaPubKey := pubKey.(*rsa.PublicKey)
+		jkey.PubExp = base64.RawURLEncoding.EncodeToString(big.NewInt(int64(rsaPubKey.E)).Bytes()) // To get it as bytes, we first convert to big int, which has a method Bytes()
+		jkey.PubMod = base64.RawURLEncoding.EncodeToString(rsaPubKey.N.Bytes())
+	case *ecdsa.PublicKey:
+		jkey.Type = "EC"
+		ecdsaPubKey := pubKey.(*ecdsa.PublicKey)
+		jkey.Curve = fmt.Sprintf("P-%v", ecdsaPubKey.Curve.Params().BitSize)
+		jkey.Xcoord = base64.RawURLEncoding.EncodeToString(ecdsaPubKey.X.Bytes())
+		jkey.Ycoord = base64.RawURLEncoding.EncodeToString(ecdsaPubKey.Y.Bytes())
+	default:
+		return errors.New(fmt.Sprintf("error: can not initialize jwk with pubkey of type: %T", typ))
 	}
-	if _, ok := pubKey.(ecdsa.PublicKey); ok {
-		jkey.Type = "ECDSA"
-	}
+	jkey.Thumb = jkey.GenThumbprint()
+	return nil
+}
+
+func (jkey *JsonWebKey) GenThumbprint() string {
+	var thumbprint string
 	switch jkey.Type {
 	case "RSA":
-		rsaPubKey, _ := pubKey.(rsa.PublicKey)
-		jkey.PubExp = base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(rsaPubKey.E)))
-		jkey.PubMod = base64.RawURLEncoding.EncodeToString(rsaPubKey.N.Bytes())
-		// Generates thumberprint
-		JsonRecursiveMarshall("e", jkey.PubExp, &jkey.Thumb)
-		JsonRecursiveMarshall("kty", jkey.Type, &jkey.Thumb)
-		JsonRecursiveMarshall("n", jkey.PubMod, &jkey.Thumb)
-		fmt.Printf("\n" + jkey.Thumb + "\n")
+		JsonRecursiveMarshall("e", jkey.PubExp, &thumbprint)
+		JsonRecursiveMarshall("kty", jkey.Type, &thumbprint)
+		JsonRecursiveMarshall("n", jkey.PubMod, &thumbprint)
 	case "ECDSA":
-		ecdsaPubKey, _ := pubKey.(ecdsa.PublicKey)
-		jkey.Curve = fmt.Sprintf("P-%v", ecdsaPubKey.Curve.Params().BitSize)
-		jkey.Xcoord = ecdsaPubKey.X.String()
-		jkey.Ycoord = ecdsaPubKey.Y.String()
-		// Generates thumberprint
-		JsonRecursiveMarshall("crv", jkey.Curve, &jkey.Thumb)
-		JsonRecursiveMarshall("kty", jkey.Type, &jkey.Thumb)
-		JsonRecursiveMarshall("x", jkey.Xcoord, &jkey.Thumb)
-		JsonRecursiveMarshall("y", jkey.Ycoord, &jkey.Thumb)
-		fmt.Printf("\n" + jkey.Thumb + "\n")
-	default:
-		return errors.New("Invalid Key type, cannot initialize JWK")
+		JsonRecursiveMarshall("crv", jkey.Curve, &thumbprint)
+		JsonRecursiveMarshall("kty", jkey.Type, &thumbprint)
+		JsonRecursiveMarshall("x", jkey.Xcoord, &thumbprint)
+		JsonRecursiveMarshall("y", jkey.Ycoord, &thumbprint)
 	}
-	return nil
+	// For the thumbprint, now SHA-256, then encode into Base-64
+	sha256Hash := sha256.Sum256([]byte(thumbprint))
+	return base64.RawURLEncoding.EncodeToString(sha256Hash[:])
+	// Strings in go are UTF-8, so we could get thumbprint (RFC7638) Using MD-5 hash (), RFC7638 recommends SHA256
+	//md5hash := md5.Sum([]byte(jkey.Thumb))
+	//jkey.Thumb = string(base64.RawURLEncoding.EncodeToString(md5hash[:]))
 }
 
 //	Gets the received JWK and unmarshalls it, returns error if fails to unmarshall
 func (jkey *JsonWebKey) Unmarshall(rcv string) error {
-	return json.Unmarshal([]byte(rcv), jkey)
+	err := json.Unmarshal([]byte(rcv), jkey)
+	if err != nil {
+		return err
+	}
+	jkey.Thumb = jkey.GenThumbprint()
+	return err
 }
 
 // From JsonWebKey struct, returns marshalled text
-func (jkey *JsonWebKey) Marshall() string {
+func (jkey *JsonWebKey) Marshal() string {
 	marsh, err := json.Marshal(jkey)
 	if err != nil {
 		return ""
@@ -280,155 +340,236 @@ func (jkey *JsonWebKey) Marshall() string {
 	return string(marsh[:])
 }
 
-// Pop token sent will contain: iat + cnf. Cnf, at the same time contains "jwk", which contains kty + use + n + e
-// Cnf claim is a proof of possession as described in RFC 7800
+// POP Token is a especial type of JWT. Because of that,
 type PopToken struct {
-	alg        string
-	Claims     map[string]string // Iat + cnf...
-	jsonWebKey JsonWebKey        //
-	jwt        JsonWebToken
+	HeaderClaims  map[string]string // TYP, ALG, JWK
+	PayloadClaims map[string]string // IAT, JTI
+	Jwk           JsonWebKey
+	Jwt           JsonWebToken
 }
 
-// Gets the received argument as string, and unmarshalls it. Pop token has methods to
+// Gets the received token as string, and unmarshalls it.
 func (popToken *PopToken) Unmarshal(token string) error {
-	popToken.jwt.DecodeFromFull(token)
-	// This is necesary to get all claims from payload as string
-	var payloadMap map[string]json.RawMessage
-	err := json.Unmarshal([]byte(popToken.jwt.Payload), &payloadMap)
-	if err != nil {
-		return err
-	}
-	var iat string
-	err = json.Unmarshal(payloadMap["iat"], &iat)
-	if err != nil {
-		return err
-	}
-	popToken.Claims = make(map[string]string)
-	popToken.Claims["iat"] = iat
-
-	var cnf Cnf // Cnf struct for unmarshalling
-	err = json.Unmarshal(payloadMap["cnf"], &cnf)
-	if err != nil {
-		return err
-	}
-	popToken.jsonWebKey = cnf.Jwt
-	// Get Alg
+	popToken.HeaderClaims = make(map[string]string)
+	popToken.PayloadClaims = make(map[string]string)
+	// Decodes full token into header and payload
+	popToken.Jwt.DecodeFromFull(token)
+	// Starting with header
 	var headerMap map[string]json.RawMessage
-	err = json.Unmarshal([]byte(popToken.jwt.Header), &headerMap)
-	if err != nil {
-		return err
+	err := json.Unmarshal([]byte(popToken.Jwt.Header), &headerMap)
+	for key, value := range headerMap {
+		popToken.HeaderClaims[key] = string(value[1 : len(value)-1])
 	}
-	err = json.Unmarshal(headerMap["alg"], &popToken.alg)
-	if err != nil {
-		return err
+	popToken.HeaderClaims["jwk"] = string(headerMap["jwk"]) // Key must be unmarshalled
+	// Then we decode the key
+	if err := popToken.Jwk.Unmarshall(popToken.HeaderClaims["jwk"]); err != nil {
+		return errors.New("Can not decode key in POPToken")
+	}
+	// Continue with payload
+	var payloadMap map[string]json.RawMessage
+	err = json.Unmarshal([]byte(popToken.Jwt.Payload), &payloadMap)
+	for key, value := range payloadMap {
+		popToken.PayloadClaims[key] = string(value[1 : len(value)-1])
 	}
 	return err
 }
 
-func (popToken PopToken) GenerateToken(privKey crypto.PrivateKey) (string, error) {
-	var pubKey crypto.PublicKey
-	switch typ := privKey.(type) {
-	// In case of rsa
-	case rsa.PrivateKey:
-		priv, _ := privKey.(rsa.PrivateKey)
-		pubKey = priv.PublicKey
-		if popToken.alg == "" {
-			err := popToken.SetPublicKey(pubKey)
-			if err != nil {
-				return "", err
-			}
-		}
-		if popToken.Claims == nil {
-			popToken.Claims = make(map[string]string)
-		}
-		popToken.Claims["iat"] = strconv.Itoa(int(time.Now().Unix()))
-		popToken.jwt.SetHeader(popToken.alg)
-		for key, value := range popToken.Claims {
-			popToken.jwt.AddClaim(key, value)
-		}
-		// CNF claim, including the public key: https://datatracker.ietf.org/doc/html/rfc7800#section-3.2
-		popToken.jwt.AddClaim(`cnf`, `{"jwk":`+popToken.jsonWebKey.Marshall()+`}`)
-		err := popToken.jwt.Sign(&priv)
-		if err != nil {
-			return "", err
-		}
-	case ecdsa.PrivateKey:
-		return "", errors.New("ECDSA not supported still")
-	default:
-		return "", errors.New(fmt.Sprintf("PopToken.GenerateToken: %T type not supported", typ))
+// Initializes popToken from claims and public key. Make sure the private key used to sign is the same used to initialize
+func (popToken *PopToken) Initialize(headerMap, payloadMap map[string]string, pubKey crypto.PublicKey) error {
+	popToken.HeaderClaims = make(map[string]string)
+	popToken.PayloadClaims = make(map[string]string)
+	// Copy header
+	for key, value := range headerMap {
+		popToken.HeaderClaims[key] = value
 	}
-
-	return popToken.jwt.GetFullToken(), nil
-}
-
-func (popToken PopToken) GetPublicKey() (rsa.PublicKey, error) {
-	var pubKey rsa.PublicKey
-	// Decode n and e
-	byteN, err := base64.RawURLEncoding.DecodeString(popToken.jsonWebKey.PubMod)
-	if err != nil {
-		return pubKey, err
+	// Sets header typ
+	popToken.HeaderClaims["typ"] = "dpop+jwt"
+	for key, value := range payloadMap {
+		popToken.PayloadClaims[key] = value
 	}
-	byteE, err := base64.RawURLEncoding.DecodeString(popToken.jsonWebKey.PubExp)
-	if err != nil {
-		return pubKey, err
+	// Sets header alg
+	switch pubKey.(type) {
+	case *rsa.PublicKey:
+		popToken.HeaderClaims["alg"] = "RS256"
+	case *ecdsa.PublicKey:
+		popToken.HeaderClaims["alg"] = "ES256"
 	}
-	// Converts n and e to big int and int
-	n := new(big.Int)
-	n.SetBytes(byteN)
-	// n, ok = n.SetString(popToken.jsonWebKey.PubMod, 10)
-	pubKey.N = n
-	pubKey.E, err = strconv.Atoi(string(byteE))
-	if err != nil {
-		return pubKey, err
-	}
-	return pubKey, nil
-}
-
-func (popToken PopToken) GetUnmarshalledPublicKey() JsonWebKey {
-	return popToken.jsonWebKey
-}
-
-func (popToken *PopToken) CheckSignature() error {
-	if popToken.alg == "" {
-		return errors.New("Cannot check signature of Unmarshalled PopToken")
-	}
-	pubKey, err := popToken.GetPublicKey()
-	if err != nil {
+	// Initializes jwk var + sets header jwk
+	if err := popToken.Jwk.Initialize(pubKey, "sign"); err != nil {
 		return err
 	}
-	return popToken.jwt.CheckSignature(&pubKey)
-}
-
-// Assigns a public key to the PopToken
-func (popToken *PopToken) SetPublicKey(pubKey crypto.PublicKey) error {
-	switch typ := pubKey.(type) {
-	case rsa.PublicKey:
-		rsaPubKey, _ := pubKey.(rsa.PublicKey)
-		popToken.alg = ("RS256")
-		popToken.jsonWebKey.Type = "RSA"
-		popToken.jsonWebKey.Use = "sig"
-		// // To make "E"
-		// buf := new(bytes.Buffer)
-		// enc := gob.NewEncoder(buf)
-		// err := binary.Write(buf, binary.LittleEndian, rsaPubKey.E)
-		// if err != nil {
-		// 	return err
-		// }
-		popToken.jsonWebKey.PubExp = base64.RawURLEncoding.EncodeToString([]byte(strconv.Itoa(rsaPubKey.E)))
-		popToken.jsonWebKey.PubMod = base64.RawURLEncoding.EncodeToString(rsaPubKey.N.Bytes())
-	case ecdsa.PublicKey:
-		return errors.New("ECDSA not supported already")
-	default:
-		return errors.New(fmt.Sprintf("Unknown type of public key: %T", typ))
+	popToken.HeaderClaims["jwk"] = popToken.Jwk.Marshal()
+	// Copy payload
+	for key, value := range payloadMap {
+		popToken.PayloadClaims[key] = value
 	}
 	return nil
 }
 
-func (popToken PopToken) Alg() string {
-	return popToken.alg
+// Generates popToken from PrivateKey, can be used even if popToken is not created / initialized
+func (popToken PopToken) GenerateToken(privKey crypto.PrivateKey) (token string, err error) {
+	// Initialization if is not
+	if popToken.HeaderClaims == nil {
+		if rsaPriv, ok := privKey.(*rsa.PrivateKey); ok {
+			if err = popToken.Initialize(nil, nil, &rsaPriv.PublicKey); err != nil {
+				return
+			}
+		} else if ecdsaPriv, ok := privKey.(*ecdsa.PrivateKey); ok {
+			if err = popToken.Initialize(nil, nil, &ecdsaPriv.PublicKey); err != nil {
+				return
+			}
+		} else {
+			err = errors.New("error: invalid key for signature, type not compatible")
+			return
+		}
+	}
+	// New payload claims: iat + jti
+	iat := int((time.Now().Unix()))
+	popToken.PayloadClaims["iat"] = strconv.Itoa(iat)
+	popToken.PayloadClaims["exp"] = strconv.Itoa(iat + 30)
+	md5Hash := md5.Sum([]byte(popToken.Jwk.Thumb + strconv.Itoa(iat)))
+	popToken.PayloadClaims["jti"] = string(base64.RawURLEncoding.EncodeToString(md5Hash[:]))
+	// Marshal header (must be in order)
+	iterator := []string{"typ", "alg", "jwk"}
+	for _, iter := range iterator {
+		popToken.Jwt.AddHeader(iter, popToken.HeaderClaims[iter])
+		delete(popToken.HeaderClaims, iter) // Delete so it does not repeat
+	}
+	for key, value := range popToken.HeaderClaims {
+		popToken.Jwt.AddHeader(key, value)
+	}
+	// Mashal payload
+	for key, value := range popToken.PayloadClaims {
+		popToken.Jwt.AddClaim(key, value)
+	}
+	// Sign the token
+	if err = popToken.Jwt.AssymSign(privKey); err != nil {
+		return
+	}
+	return popToken.Jwt.GetFullToken(), nil
 }
 
-// Marshall Jwk returns the key marshalled
-func (popToken PopToken) MarshallJwk() string {
-	return popToken.jsonWebKey.Marshall()
+func (popToken PopToken) GetPubRsa() (*rsa.PublicKey, error) {
+	var pubKey *rsa.PublicKey
+	pubKey = new(rsa.PublicKey)
+	// Decode n and e
+	byteN, err := base64.RawURLEncoding.DecodeString(popToken.Jwk.PubMod)
+	if err != nil {
+		return pubKey, err
+	}
+	byteE, err := base64.RawURLEncoding.DecodeString(popToken.Jwk.PubExp)
+	if err != nil {
+		return pubKey, err
+	}
+	// Converts n and e to big int and int
+	e := new(big.Int)
+	e.SetBytes(byteE)
+	pubKey.N = new(big.Int)
+	pubKey.N.SetBytes(byteN)
+	pubKey.E = int(e.Int64())
+	return pubKey, nil
+}
+
+func (popToken PopToken) GetPubEcdsa() (*ecdsa.PublicKey, error) {
+	var pubKey *ecdsa.PublicKey
+	// Curve. Only P-256 is supported at the moment
+	switch popToken.Jwk.Curve {
+	case "P-256":
+		pubKey.Curve = elliptic.P256()
+	default:
+		return nil, errors.New("Curve " + popToken.Jwk.Curve + " not supported")
+	}
+	byteXCoord, err := base64.RawURLEncoding.DecodeString(popToken.Jwk.Xcoord)
+	if err != nil {
+		return nil, err
+	}
+	byteYCoord, err := base64.RawURLEncoding.DecodeString(popToken.Jwk.Ycoord)
+	if err != nil {
+		return nil, err
+	}
+	pubKey.X.SetBytes(byteXCoord)
+	pubKey.Y.SetBytes(byteYCoord)
+
+	return pubKey, nil
+}
+
+// Validates keys: same alg, same thumprint...
+func (popToken PopToken) ValidateKeyContent(thumprint string) (bool, string) {
+	if thumprint != "" && thumprint != popToken.Jwk.Thumb {
+		return false, "Invalid Thumbprint"
+	}
+	return true, "ok"
+}
+
+// Checks signature, checks that alg used to sign is the same as in key (to avoid exploits)
+func (popToken *PopToken) CheckSignature() error {
+	switch popToken.HeaderClaims["alg"] {
+	case "RS256":
+		rsaPubKey, err := popToken.GetPubRsa()
+		if err != nil {
+			return err
+		}
+		return popToken.Jwt.CheckAssymSignature(rsaPubKey)
+	case "ES256":
+		ecdsaPubKey, err := popToken.GetPubEcdsa()
+		if err != nil {
+			return err
+		}
+		return popToken.Jwt.CheckAssymSignature(ecdsaPubKey)
+	default:
+		return errors.New("Invalid signing algorithm: " + popToken.HeaderClaims["alg"])
+	}
+}
+
+// Check exp time
+func (popToken PopToken) CheckExp() (bool, string) {
+	exp, err := strconv.Atoi(popToken.PayloadClaims["exp"])
+	if err != nil {
+		return false, "No exp claim"
+	}
+	act := int(time.Now().Unix())
+	if act > exp {
+		return false, "Expired"
+	}
+	return true, "OK"
+}
+
+// Check iats. -1 for default
+func (popToken PopToken) CheckIat(ttl int) (bool, string) {
+	if ttl == -1 {
+		ttl = 100
+	}
+	act := int(time.Now().Unix())
+	iat, err := strconv.Atoi(popToken.PayloadClaims["iat"])
+	if err != nil {
+		return false, "No iat claim"
+	}
+	if iat+ttl < act || iat-ttl > act { // 30 seconds margin for clock problems and trip
+		return false, "Expired"
+	}
+	return true, "OK"
+}
+
+// Returns a bool that tells if the pop token is valid.
+func (popToken *PopToken) Validate(thumbprint, aud string) (valid bool, info string) {
+	// Validates time
+	if valid, info = popToken.CheckIat(-1); !valid {
+		return
+	}
+	if valid, info = popToken.CheckExp(); !valid {
+		return
+	}
+	// Makes sure to exist claim "aud"
+	if valid = popToken.PayloadClaims["aud"] == aud; !valid {
+		return false, "Aud not valid"
+	}
+	// Checks key
+	if valid, info = popToken.ValidateKeyContent(thumbprint); !valid {
+		return
+	}
+	// Checks signature
+	if err := popToken.CheckSignature(); err != nil {
+		return false, fmt.Sprintf("%v", err)
+	}
+	return valid, info
 }

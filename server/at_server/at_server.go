@@ -520,7 +520,7 @@ func generateAt(payload AtGenPayload) string {
 	utils.Info.Printf("generateAt:jwtHeader=%s", jwtoken.GetHeader())
 	utils.Info.Printf("generateAt:jwtPayload=%s", jwtoken.GetPayload())
 	jwtoken.Encode()
-	jwtoken.Sign(theAtSecret)
+	jwtoken.SymmSign(theAtSecret)
 	return `{"token":"` + jwtoken.GetFullToken() + `"}`
 }
 
