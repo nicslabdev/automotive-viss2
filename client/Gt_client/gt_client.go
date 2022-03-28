@@ -217,7 +217,7 @@ func main() {
 	rsaList.aTokens = make(TokenMap)
 	ecdsaList := new(EcdsaList)
 	ecdsaList.agTokens = make(TokenMap)
-	ecdsaList.agTokens = make(TokenMap)
+	ecdsaList.aTokens = make(TokenMap)
 	noPopList := new(NoPopList)
 	noPopList.agTokens = make(TokenMap)
 	noPopList.aTokens = make(TokenMap)
