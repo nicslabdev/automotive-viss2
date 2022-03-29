@@ -9,9 +9,11 @@
 package main
 
 import (
-	"bufio"
+	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"io/ioutil"
 	"net/http"
 	"os"
@@ -24,19 +26,18 @@ import (
 	"github.com/akamensky/argparse"
 )
 
-type KeySet struct {
-	PrvKey string
-	PubKey string
-}
-
-var keySet KeySet
+const lt_duration = 4 * 60 * 60 // 4 hours
+var privKey *rsa.PrivateKey
 
 type Payload struct {
 	Vin     string `json:"vin"`
 	Context string `json:"context"`
 	Proof   string `json:"proof"`
-	Key     string `json:"key"`
+	//Key     utils.JsonWebKey `json:"key"`
+	Key string `json:"key"`
 }
+
+var jtiCache map[string]string // Contains a cache of the jwt that has been managed. JWT will NOT be reused this way. Cache will be cleared after Token Expiration.
 
 func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
@@ -51,14 +52,20 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 				http.Error(w, "400 request unreadable.", 400)
 			} else {
 				utils.Info.Printf("agtServer:received POST request=%s\n", string(bodyBytes))
-				serverChannel <- string(bodyBytes)
-				response := <-serverChannel
+				serverChannel <- string(bodyBytes) // If everything works fine, sends to serverChannel the body
+				// It is also necessary to send to serverChannel the POP (if it exists)
+				pop := string(req.Header.Get("PoP"))
+				if pop != "" {
+					utils.Info.Printf("agtServer: received POP = %s", pop)
+				}
+				serverChannel <- pop
+				response := <-serverChannel // Receives the response and sends it
 				utils.Info.Printf("agtServer:POST response=%s", response)
 				if len(response) == 0 {
 					http.Error(w, "400 bad input.", 400)
 				} else {
 					w.Header().Set("Access-Control-Allow-Origin", "*")
-					//				    w.Header().Set("Content-Type", "application/json")
+					w.Header().Set("Content-Type", "application/json")
 					w.Write([]byte(response))
 				}
 			}
@@ -69,49 +76,49 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
 	utils.Info.Printf("initAtServer(): :7500/agtserver")
 	agtServerHandler := makeAgtServerHandler(serverChannel)
-	muxServer.HandleFunc("/agtserver", agtServerHandler)
+	muxServer.HandleFunc("/agtserver", agtServerHandler) // Only one url is supported: "/agtserver"
 	utils.Error.Fatal(http.ListenAndServe(":7500", muxServer))
 }
 
-func initKey(prvDirectory string, pubDirectory string) {
-	prvFile, err := os.Open(prvDirectory) // Open pem file containing PEM block
-	if err != nil {
-		utils.Error.Printf("Error loading private key")
+// Load key from file, if not, creates new key file
+func initKey(prvDirectory string) {
+	if err := utils.ImportRsaKey(prvDirectory, &privKey); err != nil {
+		utils.Error.Printf("Error importing private key: %s, generating one.", err)
+		if err := utils.GenRsaKey(256, &privKey); err != nil {
+			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
+			return
+		}
+		// Key generated, must export it
+		utils.Info.Printf("RSA key generated correctly")
+		if err := os.Remove(prvDirectory); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			utils.Error.Printf("Error exporting private key, cannot remove previous file: %s", err)
+		} else if err := utils.ExportKeyPair(privKey, prvDirectory, ""); err != nil {
+			utils.Error.Printf("Error exporting private key: %s", err)
+		}
+		utils.Info.Printf("RSA key exported")
 		return
 	}
-	prvFileInfo, _ := prvFile.Stat() // Creates a buffer to read all the data in the file
-	size := prvFileInfo.Size()
-	prvBytes := make([]byte, size)
-	prvBuffer := bufio.NewReader(prvFile)
-	_, err = prvBuffer.Read(prvBytes)
-	keySet.PrvKey = string(prvBytes) // Saves Private Key in PEM format
-
-	pubFile, err := os.Open(pubDirectory) // Same as Private Key
-	if err != nil {
-		utils.Error.Printf("Error loading public key")
-		return
-	}
-	pubFileInfo, _ := pubFile.Stat()
-	size = pubFileInfo.Size()
-	pubBytes := make([]byte, size)
-	pubBuffer := bufio.NewReader(pubFile)
-	_, err = pubBuffer.Read(pubBytes)
-	keySet.PubKey = string(pubBytes)
+	utils.Info.Printf("RSA key imported correctly")
 }
 
-func generateResponse(input string) string {
+// GenerateResponse must unmarshall the payload, then ask for AGT Generation
+func generateResponse(input string, pop string) string {
 	var payload Payload
 	err := json.Unmarshal([]byte(input), &payload)
 	if err != nil {
 		utils.Error.Printf("generateResponse:error input=%s", input)
 		return `{"error": "Client request malformed"}`
 	}
-	if authenticateClient(payload) == true {
+	if authenticateClient(payload) {
+		if pop != "" {
+			return generateLTAgt(payload, pop)
+		}
 		return generateAgt(payload)
 	}
 	return `{"error": "Client authentication failed"}`
 }
 
+// Part of roles
 func checkUserRole(userRole string) bool {
 	if userRole != "OEM" && userRole != "Dealer" && userRole != "Independent" && userRole != "Owner" && userRole != "Driver" && userRole != "Passenger" {
 		return false
@@ -119,6 +126,7 @@ func checkUserRole(userRole string) bool {
 	return true
 }
 
+// Part of user role
 func checkAppRole(appRole string) bool {
 	if appRole != "OEM" && appRole != "Third party" {
 		return false
@@ -126,6 +134,7 @@ func checkAppRole(appRole string) bool {
 	return true
 }
 
+// Part of user role
 func checkDeviceRole(deviceRole string) bool {
 	if deviceRole != "Vehicle" && deviceRole != "Nomadic" && deviceRole != "Cloud" {
 		return false
@@ -133,27 +142,79 @@ func checkDeviceRole(deviceRole string) bool {
 	return true
 }
 
+// Part of user role
 func checkRoles(context string) bool {
 	if strings.Count(context, "+") != 2 {
 		return false
 	}
 	delimiter1 := strings.Index(context, "+")
 	delimiter2 := strings.Index(context[delimiter1+1:], "+")
-	if checkUserRole(context[:delimiter1]) == false || checkAppRole(context[delimiter1+1:delimiter1+1+delimiter2]) == false || checkDeviceRole(context[delimiter1+1+delimiter2+1:]) == false {
+	if !checkUserRole(context[:delimiter1]) || !checkAppRole(context[delimiter1+1:delimiter1+1+delimiter2]) || !checkDeviceRole(context[delimiter1+1+delimiter2+1:]) {
 		return false
 	}
 	return true
-
 }
 
+// Client should prove he is who he says he is. Proof of possesion now exist, authentication not.
 func authenticateClient(payload Payload) bool {
-	if checkRoles(payload.Context) == true && payload.Proof == "ABC" { // a bit too simple validation...
+	if checkRoles(payload.Context) && payload.Proof == "ABC" { // a bit too simple validation...
 		return true
 	}
 	return false
 }
 
+// Delete cached data after some time (this data is deleted if a long term AGT is generated or if no POP is returned)
+func deleteTimer(mapId string, sec int) {
+	time.Sleep(time.Duration(sec) * time.Second)
+	if jtiCache != nil {
+		delete(jtiCache, mapId)
+	}
+}
+
+// Checks pop before doing anything
+func generateLTAgt(payload Payload, pop string) string {
+	var popToken utils.PopToken
+	err := popToken.Unmarshal(pop)
+	if err != nil {
+		utils.Error.Printf("generateLTAgt: Error unmarshalling pop, err = %s", err)
+		return `{"error": "Client request malformed"}`
+	}
+	err = popToken.CheckSignature()
+	if err != nil {
+		utils.Info.Printf("generateLTAgt: Invalid POP signature")
+		return `{"error": "Invalid POP signature"}`
+	}
+	if ok, info := popToken.Validate(payload.Key, "vissv2/Agt"); !ok {
+		utils.Info.Printf("generateLTAgt: Not valid POP Token: %s", info)
+		return `{"error": "Invalid POP Token"}`
+	}
+	// Generates the response token
+	var jwtoken utils.JsonWebToken
+	uuid, err := exec.Command("uuidgen").Output()
+	if err != nil {
+		utils.Error.Printf("generateAgt:Error generating uuid, err=%s", err)
+		return `{"error": "Internal error"}`
+	}
+	uuid = uuid[:len(uuid)-1] // remove '\n' char
+	iat := int(time.Now().Unix())
+	exp := iat + lt_duration // defined by const
+	jwtoken.SetHeader("RS256")
+	jwtoken.AddClaim("vin", payload.Vin)
+	jwtoken.AddClaim("iat", strconv.Itoa(iat))
+	jwtoken.AddClaim("exp", strconv.Itoa(exp))
+	jwtoken.AddClaim("clx", payload.Context)
+	jwtoken.AddClaim("aud", "w3org/gen2")
+	jwtoken.AddClaim("jti", string(uuid))
+	jwtoken.AddClaim("pub", payload.Key)
+	//utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
+	//utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
+	jwtoken.Encode()
+	jwtoken.AssymSign(privKey)
+	return `{"token":"` + jwtoken.GetFullToken() + `"}`
+}
+
 func generateAgt(payload Payload) string {
+	var jwtoken utils.JsonWebToken
 	uuid, err := exec.Command("uuidgen").Output()
 	if err != nil {
 		utils.Error.Printf("generateAgt:Error generating uuid, err=%s", err)
@@ -162,25 +223,17 @@ func generateAgt(payload Payload) string {
 	uuid = uuid[:len(uuid)-1] // remove '\n' char
 	iat := int(time.Now().Unix())
 	exp := iat + 4*60*60 // 4 hours
-	if len(payload.Key) != 0 {
-		exp = iat + 7*24*60*60 // 1 week
-	}
-	var jwtoken utils.JsonWebToken
 	jwtoken.SetHeader("RS256")
 	jwtoken.AddClaim("vin", payload.Vin)
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))
 	jwtoken.AddClaim("clx", payload.Context)
-	if len(payload.Key) != 0 {
-		jwtoken.AddClaim("pub", payload.Key)
-	}
 	jwtoken.AddClaim("aud", "w3org/gen2")
 	jwtoken.AddClaim("jti", string(uuid))
 	utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
 	utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
 	jwtoken.Encode()
-
-	jwtoken.Sign(keySet.PrvKey)
+	jwtoken.AssymSign(privKey)
 	return `{"token":"` + jwtoken.GetFullToken() + `"}`
 }
 
@@ -201,18 +254,20 @@ func main() {
 	}
 
 	utils.InitLog("agtserver-log.txt", "./logs", *logFile, *logLevel)
-	serverChan := make(chan string)
-	muxServer := http.NewServeMux()
-	initKey("security_keys/rsa_private_key.pem", "security_keys/rsa_public_key.pem")
+	serverChan := make(chan string) // Communication between methods and dif process
+	muxServer := http.NewServeMux() // ServeMux for routing
+	initKey("agt_private_key.rsa")
 
 	go initAgtServer(serverChan, muxServer)
 
 	for {
-		select {
-		case request := <-serverChan:
-			response := generateResponse(request)
-			utils.Info.Printf("agtServer response=%s", response)
-			serverChan <- response
-		}
+		//select {
+		//case request := <-serverChan:
+		request := <-serverChan
+		pop := <-serverChan
+		// Server is running concurrently, generateResponse is called when anything is received from it
+		response := generateResponse(request, pop)
+		serverChan <- response
+		//}
 	}
 }
