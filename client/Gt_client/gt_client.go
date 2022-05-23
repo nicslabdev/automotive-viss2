@@ -28,7 +28,17 @@ const AGT_URL = "http://127.0.0.1:7500/agtserver"
 const AT_URL = "http://127.0.0.1:8600/atserver"
 
 type StringMap map[string]string
-type TokenMap map[string]*utils.JsonWebToken
+type TokenMap map[string]*utils.ExtendedJwt
+
+// To associate tokens with a key
+type RsaList struct {
+	privKey *rsa.PrivateKey
+	tokens  TokenMap
+}
+type EcdsaList struct {
+	privKey *ecdsa.PrivateKey
+	tokens  TokenMap
+}
 
 func getUserInput() string {
 	var input string
@@ -52,7 +62,7 @@ func getUserInput() string {
 func postRequest(url string, reqBody string, reqHeader StringMap) (string, error) {
 	client := &http.Client{}
 	// Creates a new request, body filled
-	request, err := http.NewRequest("POST", AGT_URL, bytes.NewBufferString(reqBody))
+	request, err := http.NewRequest("POST", url, bytes.NewBufferString(reqBody))
 	if err != nil {
 		return "", err
 	}
@@ -76,16 +86,16 @@ func postRequest(url string, reqBody string, reqHeader StringMap) (string, error
 	return string(body), err
 }
 
-// AGT REQUEST MANAGEMENT METHODS
+// STRINGMAPS MANAGEMENT METHODS
 func (claimMap StringMap) initAGTClaim() {
 	claimMap[`vin`] = `GEO001`
 	claimMap[`context`] = `Independent+OEM+Cloud`
 	claimMap[`proof`] = `ABC`
 }
-func (claimMap StringMap) deleteAGTClaim(key string) {
+func (claimMap StringMap) deleteClaim(key string) {
 	delete(claimMap, key)
 }
-func (claimMap StringMap) addAGTClaim(key string, value string) {
+func (claimMap StringMap) addClaim(key string, value string) {
 	claimMap[key] = value
 }
 func (claimMap StringMap) getFull() string {
@@ -96,16 +106,17 @@ func (claimMap StringMap) getFull() string {
 	str = str + `}`
 	return str
 }
-func (claimMap StringMap) generateAgtReq() string {
-	var strAGT string
+func (claimMap StringMap) generateReq() string {
+	var req string
 	for key, value := range claimMap {
-		utils.JsonRecursiveMarshall(key, value, &strAGT)
+		utils.JsonRecursiveMarshall(key, value, &req)
 	}
-	return strAGT
+	return req
 }
 
-func (tokenMap *TokenMap) Add(id string, res string) string {
-	(*tokenMap)[id] = new(utils.JsonWebToken)
+// TOKEN MAPS METHODS
+func (tokenMap *TokenMap) UnmarshalAdd(id string, res string) string {
+	(*tokenMap)[id] = new(utils.ExtendedJwt)
 	tempMap := make(map[string]string)
 	err := json.Unmarshal([]byte(res), &tempMap)
 	err2 := (*tokenMap)[id].DecodeFromFull(tempMap["token"])
@@ -116,27 +127,73 @@ func (tokenMap *TokenMap) Add(id string, res string) string {
 	return fmt.Sprintf("Token with id %s saved \n", id)
 }
 
+func (tokenMap *TokenMap) Add(id string, tokenStr string) string {
+	(*tokenMap)[id] = new(utils.ExtendedJwt)
+	err := (*tokenMap)[id].DecodeFromFull(tokenStr)
+	if err != nil {
+		delete((*tokenMap), id)
+		return fmt.Sprintf("Token may not be valid, cannot decode: %s\n", err)
+	}
+	return fmt.Sprintf("Token with id %s saved \n", id)
+}
+
+func (tokenMap *TokenMap) Show() string {
+	var ret string
+	for key, value := range *tokenMap {
+		ret += fmt.Sprintf("- TOKEN ID:%s\n", key)
+		indentedHead, err := json.MarshalIndent(value.HeaderClaims, "\t", "\t")
+		if err != nil {
+			ret += fmt.Sprintf("Cannot marshal token %s, It may not be valid.\n%s\n", key, value.Token.GetFullToken())
+		} else {
+			indentedPayl, err := json.MarshalIndent(value.PayloadClaims, "\t", "\t")
+			if err != nil {
+				ret += fmt.Sprintf("Cannot marshal token %s, It may not be valid.\n%s\n", key, value.Token.GetFullToken())
+			} else {
+				ret += fmt.Sprintf("\tHeader: \n\t%s\n", indentedHead)
+				ret += fmt.Sprintf("\tPayload: \n\t%s\n", indentedPayl)
+			}
+		}
+	}
+	return ret
+}
+
+func (tokenMap *TokenMap) Delete(id string) string {
+	_, exist := (*tokenMap)[id]
+	if exist {
+		delete(*tokenMap, id)
+		return fmt.Sprintln("Deleted\n ")
+	}
+	return fmt.Sprintln("Id not found\n ")
+}
+
 func main() {
-	var privRsaKey1 *rsa.PrivateKey
-	var privEcdsaKey1 *ecdsa.PrivateKey
 	//var pubKey1 rsa.PublicKey
 	//var privKey2 rsa.PrivateKey
 	//var pubKey2 rsa.PublicKey
 
+	// To associate key with tokens received
+	rsaList := new(RsaList)
+	rsaList.tokens = make(TokenMap)
+	ecdsaList := new(EcdsaList)
+	ecdsaList.tokens = make(TokenMap)
+	noPopList := make(TokenMap)
+
 	AGTClaims := make(StringMap)
 	AGTClaims.initAGTClaim()
 	AGTPOPClaims := make(StringMap)
-	AGTPOPClaims.addAGTClaim("aud", "vissv2/Agt")
-	AgTokenList := make(TokenMap)
-
+	AGTPOPClaims.addClaim("aud", "vissv2/Agt")
+	// For At requests
+	ATClaims := make(StringMap)
+	ATPOPClaims := make(StringMap)
+	ATPOPClaims.addClaim("aud", "vissv2/at")
 	// FAST INITIALIZATION
 	fmt.Println("---   GT CLIENT   ---\n\tPress 1 for fast initialization")
 	if getUserInput() == "1" {
 		fmt.Println("\tTrying to import keys ----")
-		err := utils.ImportRsaKey("rsa_priv.rsa", &privRsaKey1)
+		err := utils.ImportRsaKey("rsa_priv.rsa", &rsaList.privKey)
 		if err != nil {
 			fmt.Println("\tRSA not imported, generating key")
-			err = utils.GenRsaKey(256, &privRsaKey1)
+			err = utils.GenRsaKey(256, &rsaList.privKey)
 			if err != nil {
 				panic("Could not either generate key,")
 			} else {
@@ -146,10 +203,10 @@ func main() {
 			fmt.Println("\tRSA key imported")
 		}
 
-		err = utils.ImportEcdsaKey("ecdsa_priv.ec", &privEcdsaKey1)
+		err = utils.ImportEcdsaKey("ecdsa_priv.ec", &ecdsaList.privKey)
 		if err != nil {
 			fmt.Println("\tECDSA not imported, generating key")
-			err = utils.GenEcdsaKey(elliptic.P256(), &privEcdsaKey1)
+			err = utils.GenEcdsaKey(elliptic.P256(), &ecdsaList.privKey)
 			if err != nil {
 				panic("Could not either generate key,")
 			} else {
@@ -160,7 +217,7 @@ func main() {
 		}
 	}
 
-	for true {
+	for {
 		fmt.Println("---   GT CLIENT   ---\n\t1 - Initialize client\n\t2 - AGT Server Communication\n\t3 - AT Server Communication \n\t4 - VISSv2 Server Communication")
 		var Opt string
 		Opt = "1"
@@ -176,20 +233,20 @@ func main() {
 			case "1": // RSA configuration
 				var rsaOpt string
 				for rsaOpt != "0" {
-					fmt.Printf("RSA AUTHENTICATION CONFIGURATION -----\n  - RSA configured: %v", privRsaKey1 != nil)
+					fmt.Printf("RSA AUTHENTICATION CONFIGURATION -----\n  - RSA configured: %v", rsaList.privKey != nil)
 					fmt.Printf("\n\t1 - Generate new RSA KeyPair\n\t2 - Print RSA KeyPair\n\t3 - Export RSA Keys\n\t4 - Import keys from file (name: rsa_priv.rsa)\n\t0 - Back to main menu\n")
 					rsaOpt = getUserInput()
 					//fmt.Scanln(&initOpt)
 					switch rsaOpt {
 					case "1": // New RSA Keypair
-						err := utils.GenRsaKey(2048, &privRsaKey1)
+						err := utils.GenRsaKey(2048, &rsaList.privKey)
 						if err != nil {
 							fmt.Println("Couldn't generate RSA KeyPair")
 						} else {
 							fmt.Println("Key Generated correctly. RSA Configured Correctly")
 						}
 					case "2": // Print RSA Keys
-						privStr, pubStr, err := utils.PemEncodeRSA(privRsaKey1)
+						privStr, pubStr, err := utils.PemEncodeRSA(rsaList.privKey)
 						if err != nil {
 							fmt.Println("Couldn't get keys")
 						} else {
@@ -202,14 +259,14 @@ func main() {
 						//fmt.Scanln(&prvKeyFile)
 						//fmt.Print("Public key filename: ")
 						///fmt.Scanln(&pubKeyFile)
-						err := utils.ExportKeyPair(privRsaKey1, prvKeyFile, pubKeyFile)
+						err := utils.ExportKeyPair(rsaList.privKey, prvKeyFile, pubKeyFile)
 						if err != nil {
 							fmt.Printf("Could not export keys, error: %s", err)
 						} else {
 							fmt.Println("Keys exported correctly")
 						}
 					case "4": // Import keys from file
-						err := utils.ImportRsaKey("rsa_priv.rsa", &privRsaKey1)
+						err := utils.ImportRsaKey("rsa_priv.rsa", &rsaList.privKey)
 						if err != nil {
 							fmt.Printf("Could not import keys, error: %s\n", err)
 						} else {
@@ -224,21 +281,21 @@ func main() {
 			case "2":
 				var ecdsaOpt string
 				for ecdsaOpt != "0" {
-					fmt.Printf("ECDSA AUTHENTICATION CONFIGURATION -----\n  - ECDSA configured: %v", privEcdsaKey1 != nil)
+					fmt.Printf("ECDSA AUTHENTICATION CONFIGURATION -----\n  - ECDSA configured: %v", ecdsaList.privKey != nil)
 					fmt.Printf("\n\t1 - Generate new ECDSA KeyPair\n\t2 - Print ECDSA KeyPair\n\t3 - Export ECDSA Keys\n\t4 - Import keys from file (name: ecdsa_priv.ec)\n\t0 - Back to main menu\n")
 					ecdsaOpt = "1"
 					ecdsaOpt = getUserInput()
 					//fmt.Scanln(&initOpt)
 					switch ecdsaOpt {
 					case "1": // New Keypair
-						err := utils.GenEcdsaKey(elliptic.P256(), &privEcdsaKey1)
+						err := utils.GenEcdsaKey(elliptic.P256(), &ecdsaList.privKey)
 						if err != nil {
 							fmt.Println("Couldn't generate ECDSA KeyPair")
 						} else {
 							fmt.Println("Key Generated correctly. ECDSA Configured")
 						}
 					case "2": // Print Keys
-						privStr, pubStr, err := utils.PemEncodeECDSA(privEcdsaKey1)
+						privStr, pubStr, err := utils.PemEncodeECDSA(ecdsaList.privKey)
 						if err != nil {
 							fmt.Println("Couldn't get keys")
 						} else {
@@ -251,14 +308,14 @@ func main() {
 						//fmt.Scanln(&prvKeyFile)
 						//fmt.Print("Public key filename: ")
 						//fmt.Scanln(&pubKeyFile)
-						err := utils.ExportKeyPair(privEcdsaKey1, prvKeyFile, pubKeyFile)
+						err := utils.ExportKeyPair(ecdsaList.privKey, prvKeyFile, pubKeyFile)
 						if err != nil {
 							fmt.Printf("Could not export keys, error: %s", err)
 						} else {
 							fmt.Println("Keys exported correctly")
 						}
 					case "4": // Import keys from file
-						err := utils.ImportEcdsaKey("ecdsa_priv.ec", &privEcdsaKey1)
+						err := utils.ImportEcdsaKey("ecdsa_priv.ec", &ecdsaList.privKey)
 						if err != nil {
 							fmt.Printf("\nCould not import keys, error: %s\n", err)
 						} else {
@@ -282,13 +339,13 @@ func main() {
 					var response, signMethod string
 					var err error
 					// Checks for signing methods avaliable
-					if privRsaKey1 != nil || privEcdsaKey1 != nil {
+					if ecdsaList.privKey != nil || rsaList.privKey != nil {
 						fmt.Printf("Request for long term is avaliable, what signature method do you want to use?")
 						fmt.Printf("\n 1 - Not using LT")
-						if privRsaKey1 != nil {
+						if rsaList.privKey != nil {
 							fmt.Printf("\n 2 - RSA")
 						}
-						if privEcdsaKey1 != nil {
+						if ecdsaList.privKey != nil {
 							fmt.Printf("\n 3 - ECDSA")
 						}
 						fmt.Printf("\n")
@@ -296,69 +353,84 @@ func main() {
 					}
 					switch signMethod {
 					case "1", "n", "": // No long term
-						postContent := AGTClaims.generateAgtReq()
+						postContent := AGTClaims.generateReq()
 						fmt.Printf("No authentication being used \nSending POST Request to %s: \n%s\n", AGT_URL, postContent)
 						response, err = postRequest(AGT_URL, postContent, nil)
 						if err != nil {
 							fmt.Printf("Error during POST Request sending: %s\n", err)
+						} else if response != "" {
+							fmt.Printf("\nPOST Response received: \n%s\nSave post response? y/n   ", response)
+							if input := getUserInput(); input == "y" || input == "1" {
+								fmt.Printf("ID: ")
+								id := getUserInput()
+								fmt.Printf("%s", noPopList.UnmarshalAdd(id, response))
+							}
 						}
 					case "2", "r": // RSA long term
 						fmt.Println("RSA authentication being used. Generating POP Token")
 						var popToken utils.PopToken
 						var token string
 						fmt.Printf("\n\nGT: POPCLAIMS: %s\n\n", AGTPOPClaims)
-						err = popToken.Initialize(nil, AGTPOPClaims, &privRsaKey1.PublicKey)
+						err = popToken.Initialize(nil, AGTPOPClaims, &rsaList.privKey.PublicKey)
 						if err != nil {
 							fmt.Printf("Could not generate POP token: %s", err)
 							break
 						}
-						token, err = popToken.GenerateToken(privRsaKey1)
+						token, err = popToken.GenerateToken(rsaList.privKey)
 						if err != nil {
 							fmt.Printf("\nCould not generate POP token: %s", err)
 							break
 						}
 						fmt.Printf("\nPOP Token (in header): \n%s\n", token)
-						AGTClaims.addAGTClaim("key", popToken.Jwk.Thumb)
-						postContent := AGTClaims.generateAgtReq()
-						AGTClaims.deleteAGTClaim("key")
+						AGTClaims.addClaim("key", popToken.Jwk.Thumb)
+						postContent := AGTClaims.generateReq()
+						AGTClaims.deleteClaim("key")
 						fmt.Printf("\n Sending POST Request to %s: \n%s\n", AGT_URL, postContent)
 						response, err = postRequest(AGT_URL, postContent, map[string]string{"PoP": token})
 						if err != nil {
 							fmt.Printf("\nError during POST Request sending: %s\n", err)
+						}
+						if response != "" {
+							fmt.Printf("\nPOST Response received: \n%s\nSave post response? y/n   ", response)
+							if input := getUserInput(); input == "y" || input == "1" {
+								fmt.Printf("ID: ")
+								id := getUserInput()
+								fmt.Printf("%s", rsaList.tokens.UnmarshalAdd(id, response))
+							}
 						}
 					case "3", "e": // ECDSA long term
 						fmt.Println("ECDSA authentication being used. Generating POP Token")
 						var popToken utils.PopToken
 						var token string
-						err = popToken.Initialize(nil, map[string]string{"aud": "viss2/Agt"}, &privEcdsaKey1.PublicKey)
+						err = popToken.Initialize(nil, map[string]string{"aud": "vissv2/Agt"}, &ecdsaList.privKey.PublicKey)
 						if err != nil {
 							fmt.Printf("\nCould not generate POP token: %s", err)
 							break
 						}
-						token, err = popToken.GenerateToken(privEcdsaKey1)
+						token, err = popToken.GenerateToken(ecdsaList.privKey)
 						if err != nil {
 							fmt.Printf("\nCould not generate POP token: %s", err)
 							break
 						}
 						fmt.Printf("\nPOP Token (in header): \n%s\n", token)
-						AGTClaims.addAGTClaim("key", popToken.Jwk.Thumb)
-						postContent := AGTClaims.generateAgtReq()
-						AGTClaims.deleteAGTClaim("key")
+						AGTClaims.addClaim("key", popToken.Jwk.Thumb)
+						postContent := AGTClaims.generateReq()
+						AGTClaims.deleteClaim("key")
 						fmt.Printf("\n Sending POST Request to %s: \n%s\n", AGT_URL, postContent)
 						response, err = postRequest(AGT_URL, postContent, map[string]string{"PoP": token})
 						if err != nil {
 							fmt.Printf("\nError during POST Request sending: %s\n", err)
 						}
+						if response != "" {
+							fmt.Printf("\nPOST Response received: \n%s\nSave post response? y/n   ", response)
+							if input := getUserInput(); input == "y" || input == "1" {
+								fmt.Printf("ID: ")
+								id := getUserInput()
+								fmt.Printf("%s", ecdsaList.tokens.UnmarshalAdd(id, response))
+							}
+						}
 					default: // Nothing
 						fmt.Println("Nothing done")
-					}
-					if response != "" {
-						fmt.Printf("\nPOST Response received: \n%s\nSave post response? y/n\n", response)
-						if input := getUserInput(); input == "y" || input == "1" {
-							fmt.Printf("ID: ")
-							id := getUserInput()
-							fmt.Printf(AgTokenList.Add(id, response))
-						}
 					}
 				case "2": // Claims management
 					fmt.Printf("\t\t Actual claims:\n%s", AGTClaims.getFull())
@@ -379,12 +451,12 @@ func main() {
 							fmt.Scanln(key)
 							fmt.Println("\t\t\tNew Value: ")
 							fmt.Scanf(value)
-							AGTClaims.addAGTClaim(key, value)
+							AGTClaims.addClaim(key, value)
 						case "3":
 							var key string
 							fmt.Println("\t\t\tKey to delete: ")
 							fmt.Scanf(key)
-							AGTClaims.deleteAGTClaim(key)
+							AGTClaims.deleteClaim(key)
 						default:
 							fmt.Println("Wrong Option")
 						}
@@ -392,50 +464,141 @@ func main() {
 				case "3": // Tokens management
 					tokenOpt := "1"
 					for tokenOpt != "0" {
-						fmt.Println("AuthTokens\n\t1 - See all tokens\n\t2 - Delete by id\n\t3 - Manual Input\n\t0 - Back to main menu\n ")
+						fmt.Println("AGTokens\n\t1 - See all tokens\n\t2 - Delete by id\n\t3 - Manual Input\n\t0 - Back to main menu ")
 						tokenOpt = getUserInput()
 						switch tokenOpt {
 						case "1":
-							for key, value := range AgTokenList {
-								fmt.Printf("AUTH TOKEN (%s)\n", key)
-								HeadMap := make(StringMap)
-								PaylMap := make(StringMap)
-								err := json.Unmarshal([]byte(value.Header), &HeadMap)
-								indentedHead, err2 := json.MarshalIndent(HeadMap, "\t", "\t")
-								if err != nil || err2 != nil {
-									fmt.Printf("Cannot marshal token %s, It may not be valid.\n%s\n", key, value.GetFullToken())
-								} else {
-									err := json.Unmarshal([]byte(value.Payload), &PaylMap)
-									indentedPayl, err2 := json.MarshalIndent(PaylMap, "\t", "\t")
-									if err != nil || err2 != nil {
-										fmt.Printf("Cannot marshal token %s, It may not be valid.\n%s\n", key, value.GetFullToken())
-									} else {
-										fmt.Printf("Header: \n\t%s\n", indentedHead)
-										fmt.Printf("Payload: \n\t%s\n", indentedPayl)
-									}
-								}
-							}
+							// Shows No pop req tokens
+							fmt.Printf("\nNo POP Tokens ---\n")
+							fmt.Printf("%s\n", noPopList.Show())
+							// Shows RSA key tokens
+							fmt.Printf("\nRSA Tokens ---\n")
+							fmt.Printf("%s\n", rsaList.tokens.Show())
+							// Shows ECDSA key tokens
+							fmt.Printf("\nECDSA Tokens ---\n")
+							fmt.Printf("%s\n", ecdsaList.tokens.Show())
 						case "2":
-							fmt.Println("ID to delete: ")
-							id := getUserInput()
-							_, exist := AgTokenList[id]
-							if exist {
-								delete(AgTokenList, id)
-								fmt.Println("Deleted\n ")
-							} else {
-								fmt.Println("Id not found\n ")
+							// It is required to tell the token type and its id
+							fmt.Printf("Token type? 1: No POP, 2: RSA, 3:ECDSA :")
+							tokenTyp := getUserInput()
+							fmt.Printf("Token id: ")
+							tokenId := getUserInput()
+							switch tokenTyp {
+							case "1":
+								fmt.Printf("%s", noPopList.Delete(tokenId))
+							case "2":
+								fmt.Printf("%s", rsaList.tokens.Delete(tokenId))
+							case "3":
+								fmt.Printf("%s", ecdsaList.tokens.Delete(tokenId))
+							default:
+								fmt.Printf("Wrong type")
 							}
 						case "3": // Manual input
-							fmt.Println("Token ID: ")
-							id := getUserInput()
-							token := getUserInput()
-							fmt.Printf(AgTokenList.Add(id, token))
+							// It is required to tell the token type and its id
+							fmt.Printf("Token type? 1: No POP, 2: RSA, 3:ECDSA :")
+							tokenTyp := getUserInput()
+							fmt.Printf("Token id: ")
+							tokenId := getUserInput()
+							fmt.Printf("Token: ")
+							tokenIn := getUserInput()
+							switch tokenTyp {
+							case "1":
+								fmt.Printf("%s", noPopList.Add(tokenId, tokenIn))
+							case "2":
+								fmt.Printf("%s", rsaList.tokens.Add(tokenId, tokenIn))
+							case "3":
+								fmt.Printf("%s", ecdsaList.tokens.Add(tokenId, tokenIn))
+							default:
+								fmt.Printf("Wrong type")
+							}
 						}
 					}
 				}
 			}
 		case "3": // AT Communication
+			var atOpt string
+			for atOpt != "0" {
+				fmt.Println("AT Communication\n\t1 - Send AT request\n\t2 - Claims Management\n\t3 - Tokens received\n\t0 - Back to main menu")
+				atOpt = "1"
+				atOpt = getUserInput()
+				switch atOpt {
+				case "1": // Send token Request
+					// First, It is neccesary to have an AgTokens. Those are obtained by making a request to the AGT server
+					fmt.Printf("1 - No pop Request - Avaliable: %v\n", len(noPopList) > 0)
+					fmt.Printf("2 - RSA pop Request - Avaliable: %v\n", len(rsaList.tokens) > 0)
+					fmt.Printf("3 - ECDSA pop Request - Avaliable: %v\n", len(ecdsaList.tokens) > 0)
+					fmt.Printf("Alg: ")
+					reqAlg := getUserInput()
+					switch reqAlg {
+					case "1", "n":
+						if !(len(noPopList) > 0) {
+							fmt.Println("No tokens avaliable")
+							break
+						}
+						fmt.Printf("POP disabled Tokens avaliable: \n%s", noPopList.Show())
+						fmt.Printf("\n Id to use: ")
+						usedId := getUserInput()
+						if _, exists := noPopList[usedId]; !exists {
+							fmt.Printf("Token with id: %s doesnt exist. Sending nothing", usedId)
+							break
+						}
+						ATClaims.addClaim("purpose", "fuel-status")
+						ATClaims.addClaim("token", noPopList[usedId].Token.GetFullToken())
+						postContent := ATClaims.generateReq()
+						fmt.Printf("No authentication being used \nSending POST Request to %s: \n%s\n", AT_URL, postContent)
+						response, err := postRequest(AT_URL, postContent, nil)
+						if err != nil {
+							fmt.Printf("Error during POST Request sending: %s\n", err)
+						} else if response != "" {
+							fmt.Printf("\nPOST Response received: \n%s\n", response)
+						}
+					case "2", "r":
+						if !(len(rsaList.tokens) > 0) {
+							fmt.Println("No tokens avaliable")
+							break
+						}
+						fmt.Printf("RSA pop Tokens avaliable: \n%s", rsaList.tokens.Show())
+						fmt.Printf("\n Id to use: ")
+						usedId := getUserInput()
+						if _, exists := rsaList.tokens[usedId]; !exists {
+							fmt.Printf("Token with id: %s does not exist. Sending nothing\n", usedId)
+							break
+						}
+						fmt.Printf("Generating POP\n")
+						var popToken utils.PopToken
+						err := popToken.Initialize(nil, ATPOPClaims, &rsaList.privKey.PublicKey)
+						if err != nil {
+							fmt.Printf("Cannot initialize popToken, err=%v\n", err)
+							break
+						}
+						popStr, err := popToken.GenerateToken(rsaList.privKey)
+						if err != nil {
+							fmt.Printf("Cannot generate POPToken, err = %v", err)
+						}
+						ATClaims.addClaim("purpose", "fuel-status")
+						ATClaims.addClaim("token", rsaList.tokens[usedId].Token.GetFullToken())
+						ATClaims.addClaim("pop", popStr)
+						postContent := ATClaims.generateReq()
+						fmt.Printf("No authentication being used \nSending POST Request to %s: \n%s\n", AT_URL, postContent)
+						response, err := postRequest(AT_URL, postContent, nil)
+						if err != nil {
+							fmt.Printf("Error during POST Request sending: %s\n", err)
+						} else if response != "" {
+							fmt.Printf("\nPOST Response received: \n%s\n", response)
+						}
 
+					case "3", "e":
+						if !(len(ecdsaList.tokens) > 0) {
+							fmt.Println("No tokens avaliable")
+							break
+						}
+						fmt.Printf("ECDSA pop Tokens avaliable: \n%s", ecdsaList.tokens.Show())
+
+					default:
+						fmt.Printf("\nRequest cancelled\n")
+					}
+				}
+			}
 		}
 	}
 }

@@ -56,7 +56,7 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 				// It is also necessary to send to serverChannel the POP (if it exists)
 				pop := string(req.Header.Get("PoP"))
 				if pop != "" {
-					utils.Info.Printf("agtServer: received POP = %s\n", pop)
+					utils.Info.Printf("agtServer: received POP = %s", pop)
 				}
 				serverChannel <- pop
 				response := <-serverChannel // Receives the response and sends it
@@ -109,7 +109,7 @@ func generateResponse(input string, pop string) string {
 		utils.Error.Printf("generateResponse:error input=%s", input)
 		return `{"error": "Client request malformed"}`
 	}
-	if authenticateClient(payload) == true {
+	if authenticateClient(payload) {
 		if pop != "" {
 			return generateLTAgt(payload, pop)
 		}
@@ -149,7 +149,7 @@ func checkRoles(context string) bool {
 	}
 	delimiter1 := strings.Index(context, "+")
 	delimiter2 := strings.Index(context[delimiter1+1:], "+")
-	if checkUserRole(context[:delimiter1]) == false || checkAppRole(context[delimiter1+1:delimiter1+1+delimiter2]) == false || checkDeviceRole(context[delimiter1+1+delimiter2+1:]) == false {
+	if !checkUserRole(context[:delimiter1]) || !checkAppRole(context[delimiter1+1:delimiter1+1+delimiter2]) || !checkDeviceRole(context[delimiter1+1+delimiter2+1:]) {
 		return false
 	}
 	return true
@@ -158,7 +158,7 @@ func checkRoles(context string) bool {
 
 // Client should prove he is who he says he is. Proof of possesion now exist, authentication not.
 func authenticateClient(payload Payload) bool {
-	if checkRoles(payload.Context) == true && payload.Proof == "ABC" { // a bit too simple validation...
+	if checkRoles(payload.Context) && payload.Proof == "ABC" { // a bit too simple validation...
 		return true
 	}
 	return false
@@ -207,8 +207,8 @@ func generateLTAgt(payload Payload, pop string) string {
 	jwtoken.AddClaim("aud", "w3org/gen2")
 	jwtoken.AddClaim("jti", string(uuid))
 	jwtoken.AddClaim("pub", payload.Key)
-	utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
-	utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
+	//utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
+	//utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
 	jwtoken.Encode()
 	jwtoken.AssymSign(privKey)
 	return `{"token":"` + jwtoken.GetFullToken() + `"}`
@@ -262,13 +262,13 @@ func main() {
 	go initAgtServer(serverChan, muxServer)
 
 	for {
-		select {
-		case request := <-serverChan:
-			pop := <-serverChan
-			// Server is running concurrently, generateResponse is called when anything is received from it
-			response := generateResponse(request, pop)
-			utils.Info.Printf("agtServer response=%s", response)
-			serverChan <- response
-		}
+		//select {
+		//case request := <-serverChan:
+		request := <-serverChan
+		pop := <-serverChan
+		// Server is running concurrently, generateResponse is called when anything is received from it
+		response := generateResponse(request, pop)
+		serverChan <- response
+		//}
 	}
 }
