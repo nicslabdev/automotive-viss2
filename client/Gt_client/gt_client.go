@@ -10,42 +10,42 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"os/exec"
 
 	"github.com/MEAE-GOT/WAII/utils"
 )
 
 const AGT_URL = "http://127.0.0.1:7500/agtserver"
+
+//const AGT_URL = "http://150.214.47.151:61057/agtserver"
 const AT_URL = "http://127.0.0.1:8600/atserver"
 
 type StringMap map[string]string
 type TokenMap map[string]*utils.JsonWebToken
 
 func getUserInput() string {
-	/*	var input string
-		fmt.Scanln(&input)
-		return input
-	*/
-	reader := bufio.NewReader(os.Stdin)
-	// Disable input buffer
-	exec.Command("stty", "-F", "/dev/tty", "cbreak", "min", "1").Run()
-	//Get the character
-	input, err := reader.ReadByte()
-	//Clear the line
-	fmt.Println("\r     \r")
-	if err != nil {
-		return fmt.Sprint(err)
-	}
-	return fmt.Sprintf("%c", input)
+	var input string
+	fmt.Scanln(&input)
+	return input
+	/*
+		reader := bufio.NewReader(os.Stdin)
+		// Disable input buffer
+		exec.Command("stty", "-F", "/dev/tty", "cbreak", "min", "1").Run()
+		//Get the character
+		input, err := reader.ReadByte()
+		//Clear the line
+		fmt.Println("\r     \r")
+		if err != nil {
+			return fmt.Sprint(err)
+		}
+		return fmt.Sprintf("%c", input)*/
 }
 
 // Makes a post request on the url given. Body must be given as string, header must be passed as map[string]string
@@ -104,6 +104,18 @@ func (claimMap StringMap) generateAgtReq() string {
 	return strAGT
 }
 
+func (tokenMap *TokenMap) Add(id string, res string) string {
+	(*tokenMap)[id] = new(utils.JsonWebToken)
+	tempMap := make(map[string]string)
+	err := json.Unmarshal([]byte(res), &tempMap)
+	err2 := (*tokenMap)[id].DecodeFromFull(tempMap["token"])
+	if err != nil || err2 != nil {
+		delete((*tokenMap), id)
+		return fmt.Sprintf("Token may not be valid, cannot decode: %s\n", err)
+	}
+	return fmt.Sprintf("Token with id %s saved \n", id)
+}
+
 func main() {
 	var privRsaKey1 *rsa.PrivateKey
 	var privEcdsaKey1 *ecdsa.PrivateKey
@@ -157,7 +169,7 @@ func main() {
 		// Client initialization
 		case "1":
 			fmt.Println("CLIENT INITIALIZATION")
-			fmt.Println("\t1 - Configure RSA Authentication\n\t2 - Configure ECDSA Authentication")
+			fmt.Println("\t1 - Configure RSA Authentication\n\t2 - Configure ECDSA Authentication\n\t0 - Back to Main Menu")
 			initOpt := "1"
 			initOpt = getUserInput()
 			switch initOpt {
@@ -262,7 +274,7 @@ func main() {
 		case "2": // AGT Communication
 			var agtOpt string
 			for agtOpt != "0" {
-				fmt.Println("AGT Communication\n\t1 - Send token request\n\t2 - Claims Management\n\t0 - Back to main menu")
+				fmt.Println("AGT Communication\n\t1 - Send token request\n\t2 - Claims Management\n\t3 - Tokens received\n\t0 - Back to main menu")
 				agtOpt = "1"
 				agtOpt = getUserInput()
 				switch agtOpt {
@@ -341,12 +353,11 @@ func main() {
 						fmt.Println("Nothing done")
 					}
 					if response != "" {
-						fmt.Printf("\nPOST Response received: \n%s \nSave post response? y/n", response)
+						fmt.Printf("\nPOST Response received: \n%s\nSave post response? y/n\n", response)
 						if input := getUserInput(); input == "y" || input == "1" {
-							fmt.Printf("\n ID?")
+							fmt.Printf("ID: ")
 							id := getUserInput()
-							AgTokenList[id] = &utils.JsonWebToken{}
-							AgTokenList[id].DecodeFromFull(response)
+							fmt.Printf(AgTokenList.Add(id, response))
 						}
 					}
 				case "2": // Claims management
@@ -376,6 +387,49 @@ func main() {
 							AGTClaims.deleteAGTClaim(key)
 						default:
 							fmt.Println("Wrong Option")
+						}
+					}
+				case "3": // Tokens management
+					tokenOpt := "1"
+					for tokenOpt != "0" {
+						fmt.Println("AuthTokens\n\t1 - See all tokens\n\t2 - Delete by id\n\t3 - Manual Input\n\t0 - Back to main menu\n ")
+						tokenOpt = getUserInput()
+						switch tokenOpt {
+						case "1":
+							for key, value := range AgTokenList {
+								fmt.Printf("AUTH TOKEN (%s)\n", key)
+								HeadMap := make(StringMap)
+								PaylMap := make(StringMap)
+								err := json.Unmarshal([]byte(value.Header), &HeadMap)
+								indentedHead, err2 := json.MarshalIndent(HeadMap, "\t", "\t")
+								if err != nil || err2 != nil {
+									fmt.Printf("Cannot marshal token %s, It may not be valid.\n%s\n", key, value.GetFullToken())
+								} else {
+									err := json.Unmarshal([]byte(value.Payload), &PaylMap)
+									indentedPayl, err2 := json.MarshalIndent(PaylMap, "\t", "\t")
+									if err != nil || err2 != nil {
+										fmt.Printf("Cannot marshal token %s, It may not be valid.\n%s\n", key, value.GetFullToken())
+									} else {
+										fmt.Printf("Header: \n\t%s\n", indentedHead)
+										fmt.Printf("Payload: \n\t%s\n", indentedPayl)
+									}
+								}
+							}
+						case "2":
+							fmt.Println("ID to delete: ")
+							id := getUserInput()
+							_, exist := AgTokenList[id]
+							if exist {
+								delete(AgTokenList, id)
+								fmt.Println("Deleted\n ")
+							} else {
+								fmt.Println("Id not found\n ")
+							}
+						case "3": // Manual input
+							fmt.Println("Token ID: ")
+							id := getUserInput()
+							token := getUserInput()
+							fmt.Printf(AgTokenList.Add(id, token))
 						}
 					}
 				}

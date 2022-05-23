@@ -44,6 +44,11 @@ type JsonWebToken struct {
 	EncodedPayload   string
 	EncodedSignature string
 }
+type ExtendedJwt struct {
+	token         JsonWebToken
+	headerClaims  map[string]string
+	PayloadClaims map[string]string
+}
 
 func (token *JsonWebToken) SetHeader(algorithm string) {
 	token.Header = `{"alg":"` + algorithm + `","typ":"JWT"}`
@@ -163,11 +168,13 @@ func (token JsonWebToken) CheckAssymSignature(key crypto.PublicKey) (err error) 
 			return errors.New("Elliptic curve type not supported")
 		}
 		var r, s *big.Int
+		r = new(big.Int)
+		s = new(big.Int)
 		r.SetBytes(signature[:31])
 		s.SetBytes(signature[32:])
 		// We have to hash the token to check it
 		token.Encode()
-		hashed := sha256.Sum256([]byte(token.GetFullToken()))
+		hashed := sha256.Sum256([]byte(token.EncodedHeader + "." + token.EncodedPayload + "." + token.EncodedSignature))
 		if !ecdsa.Verify(pubKey, hashed[:], r, s) {
 			err = errors.New("Invalid ECDSA signature")
 		}

@@ -472,6 +472,7 @@ func (popToken PopToken) GetPubRsa() (*rsa.PublicKey, error) {
 
 func (popToken PopToken) GetPubEcdsa() (*ecdsa.PublicKey, error) {
 	var pubKey *ecdsa.PublicKey
+	pubKey = new(ecdsa.PublicKey)
 	// Curve. Only P-256 is supported at the moment
 	switch popToken.Jwk.Curve {
 	case "P-256":
@@ -487,7 +488,9 @@ func (popToken PopToken) GetPubEcdsa() (*ecdsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
+	pubKey.X = new(big.Int)
 	pubKey.X.SetBytes(byteXCoord)
+	pubKey.Y = new(big.Int)
 	pubKey.Y.SetBytes(byteYCoord)
 
 	return pubKey, nil
