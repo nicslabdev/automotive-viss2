@@ -1,7 +1,7 @@
 /**
 * (C) 2020 Geotab Inc
 *
-* All files and artifacts in the repository at https://github.com/MEAE-GOT/WAII
+* All files and artifacts in the repository at https://github.com/josesnchz/WAII
 * are licensed under the provisions of the license provided by the LICENSE file in this repository.
 *
 **/
@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MEAE-GOT/WAII/utils"
 	"github.com/akamensky/argparse"
 	"github.com/google/uuid"
+	"github.com/josesnchz/WAII/utils"
 )
 
 const lt_duration = 4 * 60 * 60 // 4 hours

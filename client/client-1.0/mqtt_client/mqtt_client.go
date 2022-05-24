@@ -2,7 +2,7 @@
 * (C) 2021 Mitsubishi Electrics Automotive
 * (C) 2021 Geotab
 *
-* All files and artifacts in the repository at https://github.com/MEAE-GOT/WAII
+* All files and artifacts in the repository at https://github.com/josesnchz/WAII
 * are licensed under the provisions of the license provided by the LICENSE file in this repository.
 *
 **/
@@ -13,9 +13,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/MEAE-GOT/WAII/utils"
 	"github.com/akamensky/argparse"
 	MQTT "github.com/eclipse/paho.mqtt.golang"
+	"github.com/josesnchz/WAII/utils"
 )
 
 var uniqueTopicName string

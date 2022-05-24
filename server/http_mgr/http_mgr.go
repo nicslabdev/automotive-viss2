@@ -2,7 +2,7 @@
 * (C) 2019 Geotab
 * (C) 2019 Volvo Cars
 *
-* All files and artifacts in the repository at https://github.com/MEAE-GOT/WAII
+* All files and artifacts in the repository at https://github.com/josesnchz/WAII
 * are licensed under the provisions of the license provided by the LICENSE file in this repository.
 *
 **/
@@ -14,9 +14,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/MEAE-GOT/WAII/utils"
 	"github.com/akamensky/argparse"
 	"github.com/gorilla/websocket"
+	"github.com/josesnchz/WAII/utils"
 )
 
 //common source for all requestIds

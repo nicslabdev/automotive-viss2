@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/MEAE-GOT/WAII/utils"
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/josesnchz/WAII/utils"
 )
 
 var upgrader = websocket.Upgrader{
