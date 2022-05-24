@@ -224,11 +224,11 @@ func main() {
 	AGTClaims := make(StringMap)
 	AGTClaims.initAGTClaim()
 	AGTPOPClaims := make(StringMap)
-	AGTPOPClaims.addClaim("aud", "vissv2/Agt")
+	AGTPOPClaims.addClaim("aud", "vissv2/agts")
 	// For AT Requests
 	ATClaims := make(StringMap)
 	ATPOPClaims := make(StringMap)
-	ATPOPClaims.addClaim("aud", "vissv2/at")
+	ATPOPClaims.addClaim("aud", "vissv2/ats")
 	// For VISSV2 Requests
 	VissClaims := make(StringMap)
 	// FAST INITIALIZATION
