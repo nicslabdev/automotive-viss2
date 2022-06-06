@@ -109,7 +109,7 @@ func initKey() {
 		utils.Info.Printf("RSA key generated correctly")
 		if err := os.Remove(PRIV_KEY_DIRECTORY); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			utils.Error.Printf("Error exporting private key, cannot remove previous file: %s", err)
-		} else if err := utils.ExportKeyPair(privKey, PRIV_KEY_DIRECTORY, ""); err != nil {
+		} else if err := utils.ExportKeyPair(privKey, PRIV_KEY_DIRECTORY, PUB_KEY_DIRECTORY); err != nil {
 			utils.Error.Printf("Error exporting private key: %s", err)
 		}
 		utils.Info.Printf("RSA key exported")
