@@ -19,7 +19,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/josesnchz/WAII/utils"
+	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
 const AGT_URL = "http://127.0.0.1:7500/agts"

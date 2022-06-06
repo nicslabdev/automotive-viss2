@@ -2,7 +2,7 @@
 * (C) 2021 Mitsubishi Electrics Automotive
 * (C) 2020 Geotab Inc
 *
-* All files and artifacts in the repository at https://github.com/josesnchz/WAII
+* All files and artifacts in the repository at https://github.com/nicslabdev/automotive-viss2
 * are licensed under the provisions of the license provided by the LICENSE file in this repository.
 *
 **/
@@ -21,7 +21,7 @@ import (
 
 	"github.com/akamensky/argparse"
 	"github.com/gorilla/websocket"
-	"github.com/josesnchz/WAII/utils"
+	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
 const portNum = 8080 // WS mgr portnum

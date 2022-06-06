@@ -1,7 +1,7 @@
 /**
 * (C) 2020 Geotab Inc
 *
-* All files and artifacts in the repository at https://github.com/josesnchz/WAII
+* All files and artifacts in the repository at https://github.com/nicslabdev/automotive-viss2
 * are licensed under the provisions of the license provided by the LICENSE file in this repository.
 *
 **/
@@ -22,7 +22,7 @@ import (
 
 	"github.com/akamensky/argparse"
 	"github.com/google/uuid"
-	"github.com/josesnchz/WAII/utils"
+	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
 // #include <stdlib.h>
@@ -51,6 +51,7 @@ type searchData_t struct { // searchData_t defined in cparserlib.h
 
 var agtKey *rsa.PublicKey
 
+const AGT_PUB_KEY_DIRECTORY = "agt_public_key.rsa"
 const theAtSecret = "averysecretkeyvalue2" //not shared
 
 type NoScopePayload struct {
@@ -131,8 +132,8 @@ func initVssFile() bool {
 	return true
 }
 
-func initKey(pubDirectory string) {
-	err := utils.ImportRsaPubKey(pubDirectory, &agtKey)
+func initKey() {
+	err := utils.ImportRsaPubKey(AGT_PUB_KEY_DIRECTORY, &agtKey)
 	if err != nil {
 		utils.Error.Printf("Error importing AGT key: %s", fmt.Sprintf("%v", err))
 		return
@@ -920,7 +921,7 @@ func main() {
 	initPurposelist()
 	initScopeList()
 	initVssFile()
-	initKey("agt_public_key.rsa")
+	initKey()
 
 	go initAtServer(serverChan, muxServer)
 

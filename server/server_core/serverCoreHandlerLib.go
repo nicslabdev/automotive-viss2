@@ -13,7 +13,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
-	"github.com/josesnchz/WAII/utils"
+	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
 var upgrader = websocket.Upgrader{

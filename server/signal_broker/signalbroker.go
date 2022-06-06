@@ -7,7 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
-	base "github.com/josesnchz/WAII/server/signal_broker/proto_files"
+	base "github.com/nicslabdev/automotive-viss2/server/signal_broker/proto_files"
 
 	log "github.com/sirupsen/logrus"
 	"google.golang.org/grpc"

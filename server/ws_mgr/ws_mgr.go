@@ -2,7 +2,7 @@
 * (C) 2019 Geotab Inc
 * (C) 2019 Volvo Cars
 *
-* All files and artifacts in the repository at https://github.com/josesnchz/WAII
+* All files and artifacts in the repository at https://github.com/nicslabdev/automotive-viss2
 * are licensed under the provisions of the license provided by the LICENSE file in this repository.
 *
 **/
@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	utils "github.com/josesnchz/WAII/utils"
+	utils "github.com/nicslabdev/automotive-viss2/utils"
 
 	"github.com/akamensky/argparse"
 	"github.com/gorilla/websocket"

@@ -1,7 +1,7 @@
 /**
 * (C) 2020 Geotab Inc
 *
-* All files and artifacts in the repository at https://github.com/josesnchz/WAII
+* All files and artifacts in the repository at https://github.com/nicslabdev/automotive-viss2
 * are licensed under the provisions of the license provided by the LICENSE file in this repository.
 *
 **/
@@ -24,10 +24,13 @@ import (
 
 	"github.com/akamensky/argparse"
 	"github.com/google/uuid"
-	"github.com/josesnchz/WAII/utils"
+	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
 const LT_DURATION = 4 * 60 * 60 // 4 hours
+const PRIV_KEY_DIRECTORY = "agt_private_key.rsa"
+const PUB_KEY_DIRECTORY = "agt_public_key.rsa"
+
 var privKey *rsa.PrivateKey
 
 // Used for clock unsync tolerance
@@ -52,7 +55,7 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 			http.Error(w, "404 url path not found.", 404)
 		} else if req.Method != "POST" {
 			//CORS POLICY, necessary for web client
-			if req.Method == "OPTIONS"{
+			if req.Method == "OPTIONS" {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 				w.Header().Set("Access-Control-Allow-Headers", "PoP")
 				w.Header().Set("Access-Control-Allow-Methods", "POST")
@@ -95,8 +98,8 @@ func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
 }
 
 // Load key from file, if not, creates new key file
-func initKey(prvDirectory string) {
-	if err := utils.ImportRsaKey(prvDirectory, &privKey); err != nil {
+func initKey() {
+	if err := utils.ImportRsaKey(PRIV_KEY_DIRECTORY, &privKey); err != nil {
 		utils.Error.Printf("Error importing private key: %s, generating one.", err)
 		if err := utils.GenRsaKey(256, &privKey); err != nil {
 			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
@@ -104,9 +107,9 @@ func initKey(prvDirectory string) {
 		}
 		// Key generated, must export it
 		utils.Info.Printf("RSA key generated correctly")
-		if err := os.Remove(prvDirectory); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if err := os.Remove(PRIV_KEY_DIRECTORY); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			utils.Error.Printf("Error exporting private key, cannot remove previous file: %s", err)
-		} else if err := utils.ExportKeyPair(privKey, prvDirectory, ""); err != nil {
+		} else if err := utils.ExportKeyPair(privKey, PRIV_KEY_DIRECTORY, ""); err != nil {
 			utils.Error.Printf("Error exporting private key: %s", err)
 		}
 		utils.Info.Printf("RSA key exported")
@@ -287,7 +290,7 @@ func main() {
 	utils.InitLog("agtserver-log.txt", "./logs", *logFile, *logLevel)
 	serverChan := make(chan string) // Communication between methods and dif process
 	muxServer := http.NewServeMux() // ServeMux for routing
-	initKey("agt_private_key.rsa")
+	initKey()
 
 	go initAgtServer(serverChan, muxServer)
 

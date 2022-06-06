@@ -3,7 +3,7 @@
 * (C) 2019 Geotab Inc
 * (C) 2019 Volvo Cars
 *
-* All files and artifacts in the repository at https://github.com/josesnchz/WAII
+* All files and artifacts in the repository at https://github.com/nicslabdev/automotive-viss2
 * are licensed under the provisions of the license provided by the LICENSE file in this repository.
 *
 **/
@@ -26,8 +26,8 @@ import (
 	"time"
 
 	"github.com/akamensky/argparse"
-	"github.com/josesnchz/WAII/utils"
 	_ "github.com/mattn/go-sqlite3"
+	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
 // one muxServer component for service registration, one for the data communication

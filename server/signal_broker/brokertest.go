@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/akamensky/argparse"
-	"github.com/josesnchz/WAII/utils"
+	"github.com/nicslabdev/automotive-viss2/utils"
 	log "github.com/sirupsen/logrus"
 )
 
