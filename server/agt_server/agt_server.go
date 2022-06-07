@@ -94,7 +94,7 @@ func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
 	utils.Info.Printf("initAtServer(): :7500/agts")
 	agtServerHandler := makeAgtServerHandler(serverChannel)
 	muxServer.HandleFunc("/agts", agtServerHandler)
-	utils.Error.Fatal(http.ListenAndServe(":7500", muxServer))
+	utils.Error.Fatal(http.ListenAndServeTLS(":7500", "certificate", "key", muxServer))
 }
 
 // Load key from file, if not, creates new key file

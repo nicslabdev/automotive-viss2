@@ -173,7 +173,7 @@ func initAtServer(serverChannel chan string, muxServer *http.ServeMux) {
 	utils.Info.Printf("initAtServer(): :8600/ats")
 	atServerHandler := makeAtServerHandler(serverChannel)
 	muxServer.HandleFunc("/ats", atServerHandler)
-	utils.Error.Fatal(http.ListenAndServe(":8600", muxServer))
+	utils.Error.Fatal(http.ListenAndServeTLS(":8600", "certificate", "key", muxServer))
 }
 
 func generateResponse(input string) string {
