@@ -363,7 +363,7 @@ func (server HttpServer) InitClientServer(muxServer *http.ServeMux) {
 		Info.Printf("HTTPS:CerOpt=%s", secConfig.ServerCertOpt)
 		Error.Fatal(server.ListenAndServeTLS(trSecConfigPath+secConfig.ServerSecPath+"server.crt", trSecConfigPath+secConfig.ServerSecPath+"server.key"))
 	} else {
-		Error.Fatal(http.ListenAndServe(":8888", muxServer))
+		Error.Fatal(http.ListenAndServeTLS(":8888", "certificate", "key", muxServer))
 	}
 }
 
