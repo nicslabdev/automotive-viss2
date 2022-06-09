@@ -1,0 +1,69 @@
+{
+    "conectivity":{
+        "serving_port" : ":8080",
+        "management_port" : ":8081"
+    },
+    "keys":{
+        "key_0" : {
+          "algorithm":"",
+          "symm_key":"",
+          "private_key_dir":"",
+          "public_key_dir":"",
+          "expiration":""
+        }
+    },
+    "PoP":{
+        "time_exp" : 3 ,
+        "time_error_margin_before": 3,
+        "time_error_margin_after" : 3,
+        "client_keys":{
+            "banned_thumbprints": [
+                "key10"
+            ]
+        }
+    },
+    "AGT":{
+        "client_ctx":{
+            "user": [
+                "OEM",
+                "Dealer",
+                "Independent",
+                "Owner",
+                "Driver",
+                "Passenger"
+            ],
+            "application": [
+                "OEM",
+                "Third Party"
+            ],
+            "device": [
+                "Vehicle",
+                "Nomadic",
+                "Cloud"
+            ]
+        },
+        "controlled_vehicles":[
+            "GEO001",
+            "NICS_CAR"
+        ],
+        "allowed_keys":{
+            "key_0" : {
+                "algorithm":"",
+                "public_key_dir":"",
+                "expiration":""
+            }
+        }
+    },
+    "AT":{
+        "time_exp":3
+    },
+    "Management":{
+        "management_keys" : {
+            "key_0" : {
+                "algorithm" : "",
+                "public_key_dir":"",
+                "expiration" : ""
+            }
+        }
+    }
+}

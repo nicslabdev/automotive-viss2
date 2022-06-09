@@ -9,12 +9,12 @@
 package main
 
 import (
-	"crypto/rsa"
+	"crypto"
+	"crypto/elliptic"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -27,25 +27,117 @@ import (
 	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
-const LT_DURATION = 4 * 60 * 60 // 4 hours
-const PRIV_KEY_DIRECTORY = "agt_private_key.rsa"
-const PUB_KEY_DIRECTORY = "agt_public_key.rsa"
+var Policies struct {
+	Connection       utils.Connectivity     `json:"conectivity"`
+	SigningKey       utils.Key              `json:"signing_key"`
+	PopCheckPolicies utils.PopCheck         `json:"PoP_Policies"`
+	AgtGenPolicies   utils.AGTGenerate      `json:"AGT"`
+	ManagerPolicies  utils.ManagementConfig `json:"Management"`
+}
 
-var privKey *rsa.PrivateKey
+func writePolicies() {
+	content, err := json.Marshal(Policies)
+	if err != nil {
+		utils.Error.Printf("Could not write policies: %s", err)
+	}
+	err = ioutil.WriteFile("agt_config.json", content, 0644)
+	if err != nil {
+		utils.Error.Printf("Could not write policies: %s", err)
+	}
+	utils.Info.Printf("Policies updated and saved")
+}
 
-// Used for clock unsync tolerance
-const GAP = 3
-const LIFETIME = 5
+func initPolicies() {
+	content, err := ioutil.ReadFile("agt_config.json")
+	if err != nil {
+		utils.Error.Println("Error reading config file")
+		log.Fatal(err)
+	}
+	err = json.Unmarshal(content, &Policies)
+	if err != nil {
+		utils.Error.Println("Error unmarshalling content of agt_config file")
+		log.Fatal(err)
+	}
+	initKey()
+}
+
+// Load key from file, if not, creates new key file
+func initKey() {
+	switch Policies.SigningKey.Algorithm {
+	case "RS256":
+		if err := utils.ImportRsaKey(Policies.SigningKey.PrivKeyDir, &Policies.SigningKey.RsaPrivKey); err != nil {
+			utils.Error.Printf("Error importing key, generating one.")
+			genSignKey("RS256", 0)
+		}
+	case "ES256":
+		if err := utils.ImportEcdsaKey(Policies.SigningKey.PrivKeyDir, &Policies.SigningKey.EcdsaPrivKey); err != nil {
+			utils.Error.Printf("Error importing key generating one")
+			genSignKey("ES256", 0)
+		}
+	default:
+		utils.Error.Printf("Invalid key type: %s, generating RSA", Policies.SigningKey.Algorithm)
+		genSignKey("RS256", 0)
+	}
+}
+
+func genSignKey(alg string, lifetime int) {
+	switch alg {
+	case "RS256":
+		if err := utils.GenRsaKey(256, &Policies.SigningKey.RsaPrivKey); err != nil {
+			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
+		} else { // Key generated correctly, saving it
+			utils.Info.Printf("RSA key generated correctly")
+			keyUuid := uuid.New()
+			if err := utils.ExportKeyPair(Policies.SigningKey.RsaPrivKey, keyUuid.String()+".rsa", keyUuid.String()+".rsa.pub"); err != nil {
+				utils.Error.Printf("Error exporting key: %s", err)
+			} else {
+				Policies.SigningKey.Algorithm = "RS256"
+				Policies.SigningKey.PrivKeyDir = keyUuid.String() + ".rsa"
+				Policies.SigningKey.PubKeyDir = keyUuid.String() + ".rsa.pub"
+			}
+		}
+	case "ES256":
+		if err := utils.GenEcdsaKey(elliptic.P256(), &Policies.SigningKey.EcdsaPrivKey); err != nil {
+			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
+		} else { // Key generated correctly, saving it
+			utils.Info.Printf("ECDSA key generated correctly")
+			keyUuid := uuid.New()
+			if err := utils.ExportKeyPair(Policies.SigningKey.RsaPrivKey, keyUuid.String()+".ec", keyUuid.String()+".ec.pub"); err != nil {
+				utils.Error.Printf("Error exporting key: %s", err)
+			} else {
+				Policies.SigningKey.Algorithm = "ES256"
+				Policies.SigningKey.PrivKeyDir = keyUuid.String() + ".rsa"
+				Policies.SigningKey.PubKeyDir = keyUuid.String() + ".rsa.pub"
+			}
+		}
+	}
+	writePolicies()
+}
+
+func getSignKey() crypto.PrivateKey {
+	actTime := time.Now().Unix()
+	if actTime > int64(Policies.SigningKey.Expiration) && Policies.SigningKey.Expiration != 0 {
+		genSignKey(Policies.SigningKey.Algorithm, 0)
+	}
+	switch Policies.SigningKey.Algorithm {
+	case "RS256":
+		return Policies.SigningKey.RsaPrivKey
+	case "ES256":
+		return Policies.SigningKey.EcdsaPrivKey
+	default:
+		return nil
+	}
+}
 
 // Stores a cache of the jwt ids received to not be reused
-var jtiCache map[string]struct{}
+var popIDCache map[string]struct{}
 
 type Payload struct {
 	Vin     string `json:"vin"`
 	Context string `json:"context"`
 	Proof   string `json:"proof"`
-	//Key     utils.JsonWebKey `json:"key"`
-	Key string `json:"key"`
+	Key     string `json:"key"`
+	PoP     utils.PopToken
 }
 
 func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *http.Request) {
@@ -54,8 +146,7 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 		if req.URL.Path != "/agts" {
 			http.Error(w, "404 url path not found.", 404)
 		} else if req.Method != "POST" {
-			//CORS POLICY, necessary for web client
-			if req.Method == "OPTIONS" {
+			if req.Method == "OPTIONS" { //CORS POLICY, necessary for web client
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 				w.Header().Set("Access-Control-Allow-Headers", "PoP")
 				w.Header().Set("Access-Control-Allow-Methods", "POST")
@@ -69,6 +160,11 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 				http.Error(w, "400 request unreadable.", 400)
 			} else {
 				utils.Info.Printf("agtServer:received POST request=%s\n", string(bodyBytes))
+				/*
+					THE BODY MUST
+					BE SENT ALONG -------------------------------------------------------------------------------------------------
+					WITH THE POP
+				*/
 				serverChannel <- string(bodyBytes) // If everything works fine, sends to serverChannel the body
 				// It is also necessary to send to serverChannel the POP (if it exists)
 				pop := string(req.Header.Get("PoP"))
@@ -90,32 +186,18 @@ func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *
 	}
 }
 
+// Initializes http server
 func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
-	utils.Info.Printf("initAtServer(): :7500/agts")
+	utils.Info.Printf("initAGTServer()%s, TLS: %t", Policies.Connection.ServingPort, Policies.Connection.TlsManagement.Use)
 	agtServerHandler := makeAgtServerHandler(serverChannel)
 	muxServer.HandleFunc("/agts", agtServerHandler)
-	utils.Error.Fatal(http.ListenAndServeTLS(":7500", "certificate", "key", muxServer))
-}
-
-// Load key from file, if not, creates new key file
-func initKey() {
-	if err := utils.ImportRsaKey(PRIV_KEY_DIRECTORY, &privKey); err != nil {
-		utils.Error.Printf("Error importing private key: %s, generating one.", err)
-		if err := utils.GenRsaKey(256, &privKey); err != nil {
-			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
-			return
-		}
-		// Key generated, must export it
-		utils.Info.Printf("RSA key generated correctly")
-		if err := os.Remove(PRIV_KEY_DIRECTORY); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			utils.Error.Printf("Error exporting private key, cannot remove previous file: %s", err)
-		} else if err := utils.ExportKeyPair(privKey, PRIV_KEY_DIRECTORY, PUB_KEY_DIRECTORY); err != nil {
-			utils.Error.Printf("Error exporting private key: %s", err)
-		}
-		utils.Info.Printf("RSA key exported")
-		return
+	//muxServer.HandleFunc("/agtmanagement")
+	if Policies.Connection.TlsManagement.Use {
+		utils.Error.Fatal(http.ListenAndServeTLS(Policies.Connection.ServingPort, Policies.Connection.TlsManagement.CertDir,
+			Policies.Connection.TlsManagement.KeyDir, muxServer))
+	} else {
+		utils.Error.Fatal(http.ListenAndServe(Policies.Connection.ServingPort, muxServer))
 	}
-	utils.Info.Printf("RSA key imported correctly")
 }
 
 // GenerateResponse must unmarshall the payload, then ask for AGT Generation
@@ -137,26 +219,32 @@ func generateResponse(input string, pop string) string {
 
 // Part of roles
 func checkUserRole(userRole string) bool {
-	if userRole != "OEM" && userRole != "Dealer" && userRole != "Independent" && userRole != "Owner" && userRole != "Driver" && userRole != "Passenger" {
-		return false
+	for _, role := range Policies.AgtGenPolicies.ClientContext.User {
+		if role == userRole {
+			return true
+		}
 	}
-	return true
+	return false
 }
 
 // Part of user role
 func checkAppRole(appRole string) bool {
-	if appRole != "OEM" && appRole != "Third party" {
-		return false
+	for _, role := range Policies.AgtGenPolicies.ClientContext.Application {
+		if role == appRole {
+			return true
+		}
 	}
-	return true
+	return false
 }
 
 // Part of user role
 func checkDeviceRole(deviceRole string) bool {
-	if deviceRole != "Vehicle" && deviceRole != "Nomadic" && deviceRole != "Cloud" {
-		return false
+	for _, role := range Policies.AgtGenPolicies.ClientContext.Device {
+		if role == deviceRole {
+			return true
+		}
 	}
-	return true
+	return false
 }
 
 // Part of user role
@@ -181,23 +269,23 @@ func authenticateClient(payload Payload) bool {
 }
 
 func deleteJti(jti string) {
-	time.Sleep((GAP + LIFETIME + 5) * time.Second)
-	delete(jtiCache, jti)
+	time.Sleep((time.Duration(Policies.PopCheckPolicies.TimeExp) + time.Duration(Policies.PopCheckPolicies.TimeMargin)) * time.Second)
+	delete(popIDCache, jti)
 }
 
 // Checks if jwt id exist in cache, if it does, return false. If not, it adds it and automatically clear it from cache when it expires
 func addCheckJti(jti string) bool {
-	if jtiCache == nil { // If map is empty (first time), it doesnt even check, initializes and add
-		jtiCache = make(map[string]struct{})
-		jtiCache[jti] = struct{}{}
+	if popIDCache == nil { // If map is empty (first time), it doesnt even check, initializes and add
+		popIDCache = make(map[string]struct{})
+		popIDCache[jti] = struct{}{}
 		go deleteJti(jti)
 		return true
 	}
-	if _, ok := jtiCache[jti]; ok { // Check if jti exist in cache
+	if _, ok := popIDCache[jti]; ok { // Check if jti exist in cache
 		return false
 	}
 	// If we get here, it does not exist in cache
-	jtiCache[jti] = struct{}{}
+	popIDCache[jti] = struct{}{}
 	go deleteJti(jti)
 	return true
 }
@@ -219,7 +307,7 @@ func generateLTAgt(payload Payload, pop string) string {
 		utils.Info.Printf("generateLTAgt: Invalid POP signature")
 		return `{"error": "Invalid POP signature"}`
 	}
-	if ok, info := popToken.Validate(payload.Key, "vissv2/agts", GAP, LIFETIME); !ok {
+	if ok, info := popToken.Validate(payload.Key, "vissv2/agts", Policies.PopCheckPolicies.TimeMargin, Policies.PopCheckPolicies.TimeExp); !ok {
 		utils.Info.Printf("generateLTAgt: Not valid POP Token: %s", info)
 		return `{"error": "Invalid POP Token"}`
 	}
@@ -231,19 +319,19 @@ func generateLTAgt(payload Payload, pop string) string {
 		return `{"error": "Internal error"}`
 	}
 	iat := int(time.Now().Unix())
-	exp := iat + LT_DURATION // defined by const
-	jwtoken.SetHeader("RS256")
+	exp := iat + Policies.AgtGenPolicies.TimeExpLT // Expiration time
+	jwtoken.SetHeader(Policies.SigningKey.Algorithm)
 	jwtoken.AddClaim("vin", payload.Vin) // No need to check if it is filled, if not, it does nothing (new imp makes this claim not mandatory)
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))
 	jwtoken.AddClaim("clx", payload.Context)
-	jwtoken.AddClaim("aud", "w3org/gen2")
+	jwtoken.AddClaim("aud", Policies.AgtGenPolicies.Audience)
 	jwtoken.AddClaim("jti", unparsedId.String())
 	jwtoken.AddClaim("pub", payload.Key)
 	//utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
 	//utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
 	jwtoken.Encode()
-	jwtoken.AssymSign(privKey)
+	jwtoken.AssymSign(getSignKey())
 	return `{"token":"` + jwtoken.GetFullToken() + `"}`
 }
 
@@ -256,18 +344,18 @@ func generateAgt(payload Payload) string {
 	}
 	uuid = uuid[:len(uuid)-1] // remove '\n' char
 	iat := int(time.Now().Unix())
-	exp := iat + 4*60*60 // 4 hours
-	jwtoken.SetHeader("RS256")
+	exp := iat + Policies.AgtGenPolicies.TimeExpST // 4 hours
+	jwtoken.SetHeader(Policies.SigningKey.Algorithm)
 	jwtoken.AddClaim("vin", payload.Vin)
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))
 	jwtoken.AddClaim("clx", payload.Context)
-	jwtoken.AddClaim("aud", "w3org/gen2")
+	jwtoken.AddClaim("aud", Policies.AgtGenPolicies.Audience)
 	jwtoken.AddClaim("jti", string(uuid))
 	utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
 	utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
 	jwtoken.Encode()
-	jwtoken.AssymSign(privKey)
+	jwtoken.AssymSign(getSignKey())
 	return `{"token":"` + jwtoken.GetFullToken() + `"}`
 }
 
@@ -280,20 +368,19 @@ func main() {
 		Required: false,
 		Help:     "changes log output level",
 		Default:  "info"})
-
 	// Parse input
 	err := parser.Parse(os.Args)
 	if err != nil {
 		fmt.Print(parser.Usage(err))
 	}
-
 	utils.InitLog("agtserver-log.txt", "./logs", *logFile, *logLevel)
-	serverChan := make(chan string) // Communication between methods and dif process
+
+	serverChan := make(chan string) // Communication between methods and different process
 	muxServer := http.NewServeMux() // ServeMux for routing
-	initKey()
+
+	initPolicies()
 
 	go initAgtServer(serverChan, muxServer)
-
 	for {
 		//select {
 		//case request := <-serverChan:

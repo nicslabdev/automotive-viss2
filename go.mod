@@ -1,32 +1,26 @@
 module github.com/nicslabdev/automotive-viss2
 
-go 1.16
-
-//example on how to use replace to point to fork or local path
-//replace github.com/nicslabdev/automotive-viss2/utils => github.com/MagnusGun/WAII/utils master
-//replace github.com/nicslabdev/automotive-viss2/utils => ./utils
-//replace (
-//	github.com/COVESA/vss-tools/binary/go_parser/datamodel => /home/ulfbjorkengren/Proj/covesa/vss-tools/binary/go_parser/datamodel
-//	github.com/COVESA/vss-tools/binary/go_parser/parserlib => /home/ulfbjorkengren/Proj/covesa/vss-tools/binary/go_parser/parserlib
-//)
-
-//replace github.com/nicslabdev/automotive-viss2/protobuf/protoc-out => ./protobuf/protoc-out
+go 1.17
 
 require (
-	github.com/COVESA/vss-tools/binary/go_parser/datamodel v0.0.0-20220104185813-cad8492de65f
-	github.com/COVESA/vss-tools/binary/go_parser/parserlib v0.0.0-20220104185813-cad8492de65f
+	github.com/COVESA/vss-tools/binary/go_parser/datamodel v0.0.0-20220608111714-de246395e445
+	github.com/COVESA/vss-tools/binary/go_parser/parserlib v0.0.0-20220608111714-de246395e445
 	github.com/akamensky/argparse v1.3.1
-	github.com/eclipse/paho.mqtt.golang v1.3.5
+	github.com/eclipse/paho.mqtt.golang v1.4.1
 	github.com/golang/protobuf v1.5.2
-	github.com/google/uuid v1.1.2
+	github.com/google/uuid v1.3.0
 	github.com/gorilla/mux v1.8.0
-	github.com/gorilla/websocket v1.4.2
-	github.com/mattn/go-sqlite3 v1.14.9
+	github.com/gorilla/websocket v1.5.0
+	github.com/mattn/go-sqlite3 v1.14.13
 	github.com/sirupsen/logrus v1.8.1
-	golang.org/x/net v0.0.0-20211020060615-d418f374d309 // indirect
-	golang.org/x/sys v0.0.0-20211117180635-dee7805ff2e1 // indirect
-	golang.org/x/text v0.3.7 // indirect
-	google.golang.org/genproto v0.0.0-20211019152133-63b7e35f4404 // indirect
-	google.golang.org/grpc v1.41.0
-	google.golang.org/protobuf v1.27.1
+	google.golang.org/grpc v1.47.0
+	google.golang.org/protobuf v1.28.0
+)
+
+require (
+	golang.org/x/net v0.0.0-20201021035429-f5854403a974 // indirect
+	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
+	golang.org/x/sys v0.0.0-20210119212857-b64e53b001e4 // indirect
+	golang.org/x/text v0.3.3 // indirect
+	google.golang.org/genproto v0.0.0-20200526211855-cb27e3aa2013 // indirect
 )
