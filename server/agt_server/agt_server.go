@@ -16,8 +16,8 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/http/httputil"
 	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -27,12 +27,31 @@ import (
 	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
-var Policies struct {
+var Policies struct { // Policies and claims to check AGT Requests received
 	Connection       utils.Connectivity     `json:"conectivity"`
 	SigningKey       utils.Key              `json:"signing_key"`
 	PopCheckPolicies utils.PopCheck         `json:"PoP_Policies"`
 	AgtGenPolicies   utils.AGTGenerate      `json:"AGT"`
 	ManagerPolicies  utils.ManagementConfig `json:"Management"`
+}
+
+var popIDCache map[string]struct{} // Cache of POP Ids not to be accepted
+
+type AGTRequest struct { // The received payload of an AGT Request
+	Vin     string `json:"vin"`
+	Context string `json:"context"`
+	Proof   string `json:"proof"`
+	Key     string `json:"key"`
+	PoP     utils.PopToken
+}
+
+type Response struct {
+	Error      bool
+	ErrCode    int
+	ErrMessage string
+	//In case of success
+	Body    string
+	Headers map[string]string
 }
 
 func writePolicies() {
@@ -129,68 +148,118 @@ func getSignKey() crypto.PrivateKey {
 	}
 }
 
-// Stores a cache of the jwt ids received to not be reused
-var popIDCache map[string]struct{}
-
-type Payload struct {
-	Vin     string `json:"vin"`
-	Context string `json:"context"`
-	Proof   string `json:"proof"`
-	Key     string `json:"key"`
-	PoP     utils.PopToken
+func genErrorMap(code string, message string) map[string]string {
+	errMap := make(map[string]string)
+	errMap["type"] = "error"
+	errMap["errorMessage"] = message
+	errMap["errorCode"] = code
+	return errMap
 }
 
-func makeAgtServerHandler(serverChannel chan string) func(http.ResponseWriter, *http.Request) {
+func makeAgtServerHandler(serverChannel chan map[string]string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		utils.Info.Printf("agtServer:url=%s", req.URL.Path)
-		if req.URL.Path != "/agts" {
-			http.Error(w, "404 url path not found.", 404)
-		} else if req.Method != "POST" {
-			if req.Method == "OPTIONS" { //CORS POLICY, necessary for web client
-				w.Header().Set("Access-Control-Allow-Origin", "*")
-				w.Header().Set("Access-Control-Allow-Headers", "PoP")
-				w.Header().Set("Access-Control-Allow-Methods", "POST")
-				w.Header().Set("Access-Control-Max-Age", "57600")
+		reqDump, err := httputil.DumpRequestOut(req, true)
+		if err != nil {
+			http.Error(w, "400 request unreadable.", 400)
+			utils.Info.Printf("agtServer: Received unreadable request")
+			return
+		}
+		bodyBytes, err := ioutil.ReadAll(req.Body)
+		if err != nil {
+			http.Error(w, "400 request unreadable.", 400)
+			utils.Info.Printf("agtServer: Received unreadable body request: %s", string(reqDump))
+			return
+		}
+		utils.Info.Printf("agtServer: Received AGT request: %s", string(reqDump))
+		switch req.Method {
+		case "POST":
+			reqMap := make(map[string]string)
+			reqMap["typ"] = "agtRequest"
+			reqMap["body"] = string(bodyBytes)
+			reqMap["pop"] = req.Header.Get("PoP")
+			serverChannel <- reqMap
+			response := <-serverChannel
+			if response["type"] == "error" {
+				errCode, _ := strconv.Atoi(response["errorCode"])
+				http.Error(w, response["errorMessage"], errCode)
+				utils.Info.Printf("agtServer: Sending POST error Response")
+				return
 			} else {
-				http.Error(w, "400 bad request method.", 400)
+				w.Header().Set("Content-Type", "application/json")
+				utils.Info.Printf("agtServer: Sending POST Response: %s", response["response"])
+				w.Write([]byte(response["response"]))
 			}
-		} else {
-			bodyBytes, err := ioutil.ReadAll(req.Body)
-			if err != nil {
-				http.Error(w, "400 request unreadable.", 400)
+		case "OPTIONS":
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "PoP")
+			w.Header().Set("Access-Control-Allow-Methods", "POST")
+			w.Header().Set("Access-Control-Max-Age", "57600")
+			utils.Info.Printf("agtServer: Sending OPTIONS Response")
+			return
+		default:
+			http.Error(w, "400 bad request method.", 400)
+			utils.Info.Printf("agtServer: Sending 400 Error, bad method")
+			return
+		}
+	}
+}
+
+func makeMgmServerHandler(managementChannel chan map[string]string) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, req *http.Request) {
+		utils.Info.Printf("agtServer:url=%s", req.URL.Path)
+		reqDump, err := httputil.DumpRequestOut(req, true)
+		if err != nil {
+			http.Error(w, "400 request unreadable.", 400)
+			utils.Info.Printf("agtServer: Received unreadable request")
+			return
+		}
+		bodyBytes, err := ioutil.ReadAll(req.Body)
+		if err != nil {
+			http.Error(w, "400 request unreadable.", 400)
+			utils.Info.Printf("agtServer: Received unreadable body request: %s", string(reqDump))
+			return
+		}
+		utils.Info.Printf("agtServer: Received Management request: %s", string(reqDump))
+
+		switch req.Method {
+		case "POST":
+			reqMap := make(map[string]string)
+			reqMap["typ"] = "management"
+			reqMap["body"] = string(bodyBytes)
+			managementChannel <- reqMap
+			response := <-managementChannel
+			utils.Info.Printf("agtServer: response=%s", response["response"])
+			if response["type"] == "error" {
+				errCode, _ := strconv.Atoi(response["errorCode"])
+				http.Error(w, response["errorMessage"], errCode)
+				utils.Info.Printf("agtServer: Sending error Response")
+				return
 			} else {
-				utils.Info.Printf("agtServer:received POST request=%s\n", string(bodyBytes))
-				/*
-					THE BODY MUST
-					BE SENT ALONG -------------------------------------------------------------------------------------------------
-					WITH THE POP
-				*/
-				serverChannel <- string(bodyBytes) // If everything works fine, sends to serverChannel the body
-				// It is also necessary to send to serverChannel the POP (if it exists)
-				pop := string(req.Header.Get("PoP"))
-				if pop != "" {
-					utils.Info.Printf("agtServer: received POP = %s", pop)
-				}
-				serverChannel <- pop
-				response := <-serverChannel // Receives the response and sends it
-				utils.Info.Printf("agtServer:POST response=%s", response)
-				if len(response) == 0 {
-					http.Error(w, "400 bad input.", 400)
-				} else {
-					w.Header().Set("Access-Control-Allow-Origin", "*")
-					w.Header().Set("Content-Type", "application/json")
-					w.Write([]byte(response))
-				}
+				w.Header().Set("Content-Type", "application/json")
+				utils.Info.Printf("agtServer: Sending Response: %s", response["response"])
+				w.Write([]byte(response["response"]))
 			}
+		case "OPTIONS":
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, GET")
+			w.Header().Set("Access-Control-Max-Age", "57600")
+		default:
+			http.Error(w, "400 bad request method.", 400)
+			utils.Info.Printf("agtServer: Sending 400 Error, bad Method")
+			return
 		}
 	}
 }
 
 // Initializes http server
-func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
+func initAgtServer(serverChannel chan map[string]string, mgmChannel chan map[string]string, muxServer *http.ServeMux) {
 	utils.Info.Printf("initAGTServer()%s, TLS: %t", Policies.Connection.ServingPort, Policies.Connection.TlsManagement.Use)
 	agtServerHandler := makeAgtServerHandler(serverChannel)
 	muxServer.HandleFunc("/agts", agtServerHandler)
+	mgmServerHandler := makeMgmServerHandler(mgmChannel)
+	muxServer.HandleFunc("/management", mgmServerHandler)
 	//muxServer.HandleFunc("/agtmanagement")
 	if Policies.Connection.TlsManagement.Use {
 		utils.Error.Fatal(http.ListenAndServeTLS(Policies.Connection.ServingPort, Policies.Connection.TlsManagement.CertDir,
@@ -198,23 +267,6 @@ func initAgtServer(serverChannel chan string, muxServer *http.ServeMux) {
 	} else {
 		utils.Error.Fatal(http.ListenAndServe(Policies.Connection.ServingPort, muxServer))
 	}
-}
-
-// GenerateResponse must unmarshall the payload, then ask for AGT Generation
-func generateResponse(input string, pop string) string {
-	var payload Payload
-	err := json.Unmarshal([]byte(input), &payload)
-	if err != nil {
-		utils.Error.Printf("generateResponse:error input=%s", input)
-		return `{"error": "Client request malformed"}`
-	}
-	if authenticateClient(payload) {
-		if pop != "" {
-			return generateLTAgt(payload, pop)
-		}
-		return generateAgt(payload)
-	}
-	return `{"error": "Client authentication failed"}`
 }
 
 // Part of roles
@@ -260,9 +312,18 @@ func checkRoles(context string) bool {
 	return true
 }
 
+// Check Client Proof
+func checkProof(proof string, context string) bool {
+	if proof == "ABC" {
+		return true
+	} else {
+		return false
+	}
+}
+
 // Client should prove he is who he says he is. Proof of possesion now exist, authentication not.
-func authenticateClient(payload Payload) bool {
-	if checkRoles(payload.Context) && payload.Proof == "ABC" { // a bit too simple validation...
+func authenticateClient(request AGTRequest) bool {
+	if checkRoles(request.Context) && checkProof(request.Proof, request.Context) { // a bit too simple validation...
 		return true
 	}
 	return false
@@ -291,72 +352,111 @@ func addCheckJti(jti string) bool {
 }
 
 // Checks pop before doing anything
-func generateLTAgt(payload Payload, pop string) string {
-	var popToken utils.PopToken
-	err := popToken.Unmarshal(pop)
-	if err != nil {
-		utils.Error.Printf("generateLTAgt: Error unmarshalling pop, err = %s", err)
-		return `{"error": "Client request malformed"}`
+func generateAgtResponse(request map[string]string) map[string]string {
+	longTerm := false
+	var agtRequest AGTRequest
+	if err := json.Unmarshal([]byte(request["body"]), &agtRequest); err != nil {
+		utils.Error.Printf("generateResponse: unvalid request")
+		return genErrorMap("400", `{"error": "Client request malformed"}`)
 	}
-	if !addCheckJti(popToken.PayloadClaims["jti"]) {
-		utils.Error.Printf("generateLTAgt: JTI used")
-		return `{"error": "Repeated JTI"}`
+	if request["pop"] != "" {
+		longTerm = true
+		if err := agtRequest.PoP.Unmarshal(request["pop"]); err != nil {
+			utils.Error.Printf("generateResponse: Error unmarshalling pop, err = %s", err)
+			return genErrorMap("400", `{"error": "Proof of possession malformed"}`)
+		}
+		if !addCheckJti(agtRequest.PoP.PayloadClaims["jti"]) {
+			utils.Error.Printf("generateLTAgt: JTI used")
+			return genErrorMap("400", `{"error": "Repeated JTI"}`)
+		}
+		if err := agtRequest.PoP.CheckSignature(); err != nil {
+			utils.Info.Printf("generateLTAgt: Invalid POP signature")
+			return genErrorMap("400", `{"error": "Repeated JTI"}`)
+		}
+		if ok, info := agtRequest.PoP.Validate(agtRequest.Key, Policies.PopCheckPolicies.Audience, Policies.PopCheckPolicies.TimeMargin, Policies.PopCheckPolicies.TimeExp); !ok {
+			utils.Info.Printf("generateLTAgt: Not valid POP Token: %s", info)
+			return genErrorMap("400", `{"error": "Invalid POP Token"}`)
+		}
 	}
-	err = popToken.CheckSignature()
-	if err != nil {
-		utils.Info.Printf("generateLTAgt: Invalid POP signature")
-		return `{"error": "Invalid POP signature"}`
+	if !authenticateClient(agtRequest) {
+		utils.Info.Printf("generateLTAgt: Can not Authenticate Client context")
+		return genErrorMap("400", `{"error": "Could not Authenticate Context"}`)
 	}
-	if ok, info := popToken.Validate(payload.Key, "vissv2/agts", Policies.PopCheckPolicies.TimeMargin, Policies.PopCheckPolicies.TimeExp); !ok {
-		utils.Info.Printf("generateLTAgt: Not valid POP Token: %s", info)
-		return `{"error": "Invalid POP Token"}`
-	}
+
 	// Generates the response token
 	var jwtoken utils.JsonWebToken
 	var unparsedId uuid.UUID
+	var err error
 	if unparsedId, err = uuid.NewRandom(); err != nil { // Better way to generate uuid than calling an ext program
 		utils.Error.Printf("generateAgt:Error generating uuid, err=%s", err)
-		return `{"error": "Internal error"}`
+		return genErrorMap("500", `{"error": "Internal error"}`)
 	}
-	iat := int(time.Now().Unix())
-	exp := iat + Policies.AgtGenPolicies.TimeExpLT // Expiration time
 	jwtoken.SetHeader(Policies.SigningKey.Algorithm)
-	jwtoken.AddClaim("vin", payload.Vin) // No need to check if it is filled, if not, it does nothing (new imp makes this claim not mandatory)
-	jwtoken.AddClaim("iat", strconv.Itoa(iat))
-	jwtoken.AddClaim("exp", strconv.Itoa(exp))
-	jwtoken.AddClaim("clx", payload.Context)
+	jwtoken.AddClaim("vin", agtRequest.Vin) // No need to check if it is filled, if not, it does nothing (new imp makes this claim not mandatory)
+	jwtoken.AddClaim("clx", agtRequest.Context)
 	jwtoken.AddClaim("aud", Policies.AgtGenPolicies.Audience)
 	jwtoken.AddClaim("jti", unparsedId.String())
-	jwtoken.AddClaim("pub", payload.Key)
-	//utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
-	//utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
-	jwtoken.Encode()
-	jwtoken.AssymSign(getSignKey())
-	return `{"token":"` + jwtoken.GetFullToken() + `"}`
-}
-
-func generateAgt(payload Payload) string {
-	var jwtoken utils.JsonWebToken
-	uuid, err := exec.Command("uuidgen").Output()
-	if err != nil {
-		utils.Error.Printf("generateAgt:Error generating uuid, err=%s", err)
-		return `{"error": "Internal error"}`
-	}
-	uuid = uuid[:len(uuid)-1] // remove '\n' char
 	iat := int(time.Now().Unix())
-	exp := iat + Policies.AgtGenPolicies.TimeExpST // 4 hours
-	jwtoken.SetHeader(Policies.SigningKey.Algorithm)
-	jwtoken.AddClaim("vin", payload.Vin)
+	exp := iat + Policies.AgtGenPolicies.TimeExpST // Expiration time
+	if longTerm {
+		jwtoken.AddClaim("pub", agtRequest.Key)
+		exp = iat + Policies.AgtGenPolicies.TimeExpLT // Expiration time
+	}
 	jwtoken.AddClaim("iat", strconv.Itoa(iat))
 	jwtoken.AddClaim("exp", strconv.Itoa(exp))
-	jwtoken.AddClaim("clx", payload.Context)
-	jwtoken.AddClaim("aud", Policies.AgtGenPolicies.Audience)
-	jwtoken.AddClaim("jti", string(uuid))
-	utils.Info.Printf("generateAgt:jwtHeader=%s", jwtoken.GetHeader())
-	utils.Info.Printf("generateAgt:jwtPayload=%s", jwtoken.GetPayload())
 	jwtoken.Encode()
 	jwtoken.AssymSign(getSignKey())
-	return `{"token":"` + jwtoken.GetFullToken() + `"}`
+	response := make(map[string]string)
+	response["type"] = "response"
+	response["response"] = `{"token":"` + jwtoken.GetFullToken() + `"}`
+	return response
+}
+
+func generateManagementResponse(request map[string]string) map[string]string {
+	// First, check management authorization. Management Key is in the JSON.
+	//var receivedRequest utils.PopToken
+	//receivedRequest.Unmarshal(request["body"])
+	//receivedRequest.CheckManualSignature()
+	//receivedRequest.CheckIat()
+	//receivedRequest.CheckAud()
+
+	//var requestList map[string]([]string)
+	//json.Unmarshal([]byte(receivedRequest.PayloadClaims["toDo"]), &requestList)
+	/*
+		for _, value := range requestList["post"] {
+			route := strings.SplitAfter(value, "/")
+			var point interface{}
+			point = &Policies
+			for _, subroute := range route {
+				if point != nil && point[subroute] != nil {
+					if !strings.Contains(subroute, "=") {
+						switch t := *point.(type){
+						case struct:
+
+						case map:
+
+						}
+						point = &point[Policies]
+					} else {
+						sep := strings.SplitAfter(subroute, "=")
+						point[sep[0]] = sep[1]
+					}
+				} else {
+					// UNVALID
+				}
+			}
+		}
+
+		for element := range requestList["get"] {
+			route := strings.SplitAfter(element)
+			for index := range route {
+
+			}
+		}*/
+	response := make(map[string]string)
+	response["type"] = "response"
+	response["response"] = "managementresponse"
+	return response
 }
 
 func main() {
@@ -375,20 +475,21 @@ func main() {
 	}
 	utils.InitLog("agtserver-log.txt", "./logs", *logFile, *logLevel)
 
-	serverChan := make(chan string) // Communication between methods and different process
-	muxServer := http.NewServeMux() // ServeMux for routing
+	serverChan := make(chan map[string]string)     // Communication between AGT Request methods
+	managementChan := make(chan map[string]string) // Communication between management methods
+	muxServer := http.NewServeMux()                // ServeMux for routing
 
 	initPolicies()
 
-	go initAgtServer(serverChan, muxServer)
+	go initAgtServer(serverChan, managementChan, muxServer)
 	for {
-		//select {
-		//case request := <-serverChan:
-		request := <-serverChan
-		pop := <-serverChan
-		// Server is running concurrently, generateResponse is called when anything is received from it
-		response := generateResponse(request, pop)
-		serverChan <- response
-		//}
+		select {
+		case AGRequest := <-serverChan:
+			response := generateAgtResponse(AGRequest)
+			serverChan <- response
+		case mgmRequest := <-managementChan:
+			response := generateManagementResponse(mgmRequest)
+			serverChan <- response
+		}
 	}
 }

@@ -320,6 +320,7 @@ type JsonWebKey struct {
 	Curve  string `json:"crv,omitempty"` //ECDSA
 	Xcoord string `json:"x,omitempty"`   //ECDSA
 	Ycoord string `json:"y,omitempty"`   //ECDSA
+	KeyID  string `json:"kid,omitempty"` //KeyThumprint
 }
 
 // Initializes json web key from public key
@@ -388,7 +389,7 @@ func (jkey *JsonWebKey) Marshal() string {
 // POP Token is a especial type of JWT. Because of that,
 type PopToken struct {
 	HeaderClaims  map[string]string // TYP, ALG, JWK
-	PayloadClaims map[string]string // IAT, JTI
+	PayloadClaims map[string]string // IAT, JTI ...
 	Jwk           JsonWebKey
 	Jwt           JsonWebToken
 }
@@ -409,7 +410,7 @@ func (popToken *PopToken) Unmarshal(token string) error {
 		popToken.HeaderClaims[key] = string(value[1 : len(value)-1])
 	}
 	popToken.HeaderClaims["jwk"] = string(headerMap["jwk"]) // Key must be unmarshalled
-	// Then we decode the key
+	// Then we decode the key, in that case a "kid" will appear
 	if err := popToken.Jwk.Unmarshall(popToken.HeaderClaims["jwk"]); err != nil {
 		return errors.New("can not decode key in poptoken")
 	}
@@ -563,6 +564,26 @@ func (popToken *PopToken) CheckAud(aud string) (bool, string) {
 
 // Checks signature, checks that alg used to sign is the same as in key (to avoid exploits)
 func (popToken *PopToken) CheckSignature() error {
+	switch popToken.HeaderClaims["alg"] {
+	case "RS256":
+		rsaPubKey, err := popToken.GetPubRsa()
+		if err != nil {
+			return err
+		}
+		return popToken.Jwt.CheckAssymSignature(rsaPubKey)
+	case "ES256":
+		ecdsaPubKey, err := popToken.GetPubEcdsa()
+		if err != nil {
+			return err
+		}
+		return popToken.Jwt.CheckAssymSignature(ecdsaPubKey)
+	default:
+		return errors.New("Invalid signing algorithm: " + popToken.HeaderClaims["alg"])
+	}
+}
+
+// Check signature using a given key
+func (popToken *PopToken) CheckManualSignature(key crypto.PublicKey) error {
 	switch popToken.HeaderClaims["alg"] {
 	case "RS256":
 		rsaPubKey, err := popToken.GetPubRsa()

@@ -33,6 +33,7 @@ type PopCheck struct {
 	TimeExp    int      `json:"time_exp"`
 	TimeMargin int      `json:"time_error_margin"`
 	BannedKeys []string `json:"banned_thumbprints"`
+	Audience   string   `json:"audience"`
 }
 
 type AGTGenerate struct {

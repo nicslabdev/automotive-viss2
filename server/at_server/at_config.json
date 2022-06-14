@@ -1,7 +1,11 @@
 {
     "conectivity":{
         "serving_port" : ":8080",
-        "management_port" : ":8081"
+        "tls": {
+            "use": false,
+            "certificate_dir": "directory",
+            "key_dir": "directory"
+        }
     },
     "keys":{
         "key_0" : {
