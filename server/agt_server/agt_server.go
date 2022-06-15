@@ -333,6 +333,20 @@ func checkProof(proof string, context string) bool {
 	}
 }
 
+// Check Vin
+func checkVin(vin string) bool {
+	if vin == "" && len(Policies.AgtGenPolicies.VehicleIds) == 0 {
+		return true
+	} else {
+		for _, goodVin := range Policies.AgtGenPolicies.VehicleIds {
+			if goodVin == vin {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Client should prove he is who he says he is. Proof of possesion now exist, authentication not.
 func authenticateClient(request AGTRequest) bool {
 	if checkRoles(request.Context) && checkProof(request.Proof, request.Context) { // a bit too simple validation...
@@ -368,31 +382,35 @@ func generateAgtResponse(request map[string]string) map[string]string {
 	longTerm := false
 	var agtRequest AGTRequest
 	if err := json.Unmarshal([]byte(request["body"]), &agtRequest); err != nil {
-		utils.Error.Printf("generateResponse: unvalid request")
+		utils.Error.Printf("generateAgt: unvalid request")
 		return genErrorMap("400", `{"error": "Client request malformed"}`)
 	}
 	if request["pop"] != "" {
 		longTerm = true
 		if err := agtRequest.PoP.Unmarshal(request["pop"]); err != nil {
-			utils.Error.Printf("generateResponse: Error unmarshalling pop, err = %s", err)
+			utils.Error.Printf("generateAgt: Error unmarshalling pop, err = %s", err)
 			return genErrorMap("400", `{"error": "Proof of possession malformed"}`)
 		}
 		if !addCheckJti(agtRequest.PoP.PayloadClaims["jti"]) {
-			utils.Error.Printf("generateLTAgt: JTI used")
+			utils.Error.Printf("generateAgt: JTI used")
 			return genErrorMap("400", `{"error": "Repeated JTI"}`)
 		}
 		if err := agtRequest.PoP.CheckSignature(); err != nil {
-			utils.Info.Printf("generateLTAgt: Invalid POP signature")
+			utils.Info.Printf("generateAgt: Invalid POP signature")
 			return genErrorMap("400", `{"error": "Repeated JTI"}`)
 		}
 		if ok, info := agtRequest.PoP.Validate(agtRequest.Key, Policies.PopCheckPolicies.Audience, Policies.PopCheckPolicies.TimeMargin, Policies.PopCheckPolicies.TimeExp); !ok {
-			utils.Info.Printf("generateLTAgt: Not valid POP Token: %s", info)
+			utils.Info.Printf("generateAgt: Not valid POP Token: %s", info)
 			return genErrorMap("400", `{"error": "Invalid POP Token"}`)
 		}
 	}
 	if !authenticateClient(agtRequest) {
-		utils.Info.Printf("generateLTAgt: Can not Authenticate Client context")
+		utils.Info.Printf("generateAgt: Can not Authenticate Client context")
 		return genErrorMap("400", `{"error": "Could not Authenticate Context"}`)
+	}
+	if !checkVin(agtRequest.Vin) {
+		utils.Info.Printf("generateAgt: VIN not valid")
+		return genErrorMap("400", `{"error": "Could not Check VIN"}`)
 	}
 
 	// Generates the response token
