@@ -1,6 +1,6 @@
 {
     "conectivity": {
-        "serving_port": ":8080",
+        "serving_port": ":7500",
         "tls": {
             "use": false,
             "certificate_dir": "directory",
@@ -18,7 +18,8 @@
         "time_error_margin": 3,
         "banned_thumbprints": [
             ""
-        ]
+        ],
+        "audience" : "vissv2/agts"
     },
     "AGT": {
         "client_ctx": {

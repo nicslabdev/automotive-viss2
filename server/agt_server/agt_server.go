@@ -16,7 +16,6 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"strconv"
 	"strings"
@@ -158,32 +157,30 @@ func genErrorMap(code string, message string) map[string]string {
 
 func makeAgtServerHandler(serverChannel chan map[string]string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		utils.Info.Printf("agtServer:url=%s", req.URL.Path)
-		reqDump, err := httputil.DumpRequestOut(req, true)
+		bodyBytes, err := ioutil.ReadAll(req.Body)
 		if err != nil {
 			http.Error(w, "400 request unreadable.", 400)
 			utils.Info.Printf("agtServer: Received unreadable request")
 			return
 		}
-		bodyBytes, err := ioutil.ReadAll(req.Body)
-		if err != nil {
-			http.Error(w, "400 request unreadable.", 400)
-			utils.Info.Printf("agtServer: Received unreadable body request: %s", string(reqDump))
-			return
-		}
-		utils.Info.Printf("agtServer: Received AGT request: %s", string(reqDump))
+		utils.Info.Printf("agtServer: Received AGT request: %s", string(bodyBytes))
 		switch req.Method {
 		case "POST":
 			reqMap := make(map[string]string)
 			reqMap["typ"] = "agtRequest"
 			reqMap["body"] = string(bodyBytes)
 			reqMap["pop"] = req.Header.Get("PoP")
+			if reqMap["pop"] != "" {
+				utils.Info.Printf("agtServer: Received POP request: %s", reqMap["pop"])
+			}
 			serverChannel <- reqMap
 			response := <-serverChannel
 			if response["type"] == "error" {
 				errCode, _ := strconv.Atoi(response["errorCode"])
 				http.Error(w, response["errorMessage"], errCode)
-				utils.Info.Printf("agtServer: Sending POST error Response")
+				utils.Info.Printf("agtServer: Sending POST error Response: %s", response["errorCode"])
 				return
 			} else {
 				w.Header().Set("Content-Type", "application/json")
@@ -191,11 +188,11 @@ func makeAgtServerHandler(serverChannel chan map[string]string) func(http.Respon
 				w.Write([]byte(response["response"]))
 			}
 		case "OPTIONS":
+			utils.Info.Printf("agtServer: Sending OPTIONS Response")
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Headers", "PoP")
 			w.Header().Set("Access-Control-Allow-Methods", "POST")
 			w.Header().Set("Access-Control-Max-Age", "57600")
-			utils.Info.Printf("agtServer: Sending OPTIONS Response")
 			return
 		default:
 			http.Error(w, "400 bad request method.", 400)
@@ -207,20 +204,15 @@ func makeAgtServerHandler(serverChannel chan map[string]string) func(http.Respon
 
 func makeMgmServerHandler(managementChannel chan map[string]string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		utils.Info.Printf("agtServer:url=%s", req.URL.Path)
-		reqDump, err := httputil.DumpRequestOut(req, true)
-		if err != nil {
-			http.Error(w, "400 request unreadable.", 400)
-			utils.Info.Printf("agtServer: Received unreadable request")
-			return
-		}
 		bodyBytes, err := ioutil.ReadAll(req.Body)
 		if err != nil {
 			http.Error(w, "400 request unreadable.", 400)
-			utils.Info.Printf("agtServer: Received unreadable body request: %s", string(reqDump))
+			utils.Info.Printf("agtServer: Received unreadable body request")
 			return
 		}
-		utils.Info.Printf("agtServer: Received Management request: %s", string(reqDump))
+		utils.Info.Printf("agtServer: Received Management request: %s", string(bodyBytes))
 
 		switch req.Method {
 		case "POST":
@@ -229,18 +221,19 @@ func makeMgmServerHandler(managementChannel chan map[string]string) func(http.Re
 			reqMap["body"] = string(bodyBytes)
 			managementChannel <- reqMap
 			response := <-managementChannel
-			utils.Info.Printf("agtServer: response=%s", response["response"])
 			if response["type"] == "error" {
 				errCode, _ := strconv.Atoi(response["errorCode"])
 				http.Error(w, response["errorMessage"], errCode)
-				utils.Info.Printf("agtServer: Sending error Response")
+				utils.Info.Printf("agtServer: Sending error Response: %s", response["errorMessage"])
 				return
 			} else {
 				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Access-Control-Allow-Origin", "*")
 				utils.Info.Printf("agtServer: Sending Response: %s", response["response"])
 				w.Write([]byte(response["response"]))
 			}
 		case "OPTIONS":
+			utils.Info.Printf("agtServer: Sending OPTIONS Response")
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization")
 			w.Header().Set("Access-Control-Allow-Methods", "POST, GET")
@@ -253,6 +246,23 @@ func makeMgmServerHandler(managementChannel chan map[string]string) func(http.Re
 	}
 }
 
+func makeGenServerHandler() func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, req *http.Request) {
+		switch req.Method {
+		case "OPTIONS":
+			utils.Info.Printf("agtServer: Received OPTIONS Request, Sending OPTIONS Response")
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+			w.Header().Set("Access-Control-Allow-Headers", "PoP")
+			w.Header().Set("Access-Control-Allow-Methods", "POST")
+			w.Header().Set("Access-Control-Max-Age", "57600")
+			return
+		default:
+			http.Error(w, "404 Not found.", 404)
+			return
+		}
+	}
+}
+
 // Initializes http server
 func initAgtServer(serverChannel chan map[string]string, mgmChannel chan map[string]string, muxServer *http.ServeMux) {
 	utils.Info.Printf("initAGTServer()%s, TLS: %t", Policies.Connection.ServingPort, Policies.Connection.TlsManagement.Use)
@@ -260,6 +270,8 @@ func initAgtServer(serverChannel chan map[string]string, mgmChannel chan map[str
 	muxServer.HandleFunc("/agts", agtServerHandler)
 	mgmServerHandler := makeMgmServerHandler(mgmChannel)
 	muxServer.HandleFunc("/management", mgmServerHandler)
+	genServerHandler := makeGenServerHandler()
+	muxServer.HandleFunc("/", genServerHandler)
 	//muxServer.HandleFunc("/agtmanagement")
 	if Policies.Connection.TlsManagement.Use {
 		utils.Error.Fatal(http.ListenAndServeTLS(Policies.Connection.ServingPort, Policies.Connection.TlsManagement.CertDir,
@@ -455,7 +467,7 @@ func generateManagementResponse(request map[string]string) map[string]string {
 		}*/
 	response := make(map[string]string)
 	response["type"] = "response"
-	response["response"] = "managementresponse"
+	response["response"] = "Server management URL not avaliable already"
 	return response
 }
 
