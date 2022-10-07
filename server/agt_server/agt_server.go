@@ -26,7 +26,11 @@ import (
 	"github.com/nicslabdev/automotive-viss2/utils"
 )
 
-var Policies struct { // Policies and claims to check AGT Requests received
+// Policies and claims to check AGT Requests received.
+// Contains the keys used to sign, connection claims and contents to verify clients requests
+const POLICIES_FILE = "agt_config.json"
+
+var Policies struct {
 	Connection       utils.Connectivity     `json:"conectivity"`
 	SigningKey       utils.Key              `json:"signing_key"`
 	PopCheckPolicies utils.PopCheck         `json:"PoP_Policies"`
@@ -36,7 +40,8 @@ var Policies struct { // Policies and claims to check AGT Requests received
 
 var popIDCache map[string]struct{} // Cache of POP Ids not to be accepted
 
-type AGTRequest struct { // The received payload of an AGT Request
+// Contains all the claims needed to verify a received AGT Request. Filled when receiving the Request.
+type AGTRequest struct {
 	Vin     string `json:"vin"`
 	Context string `json:"context"`
 	Proof   string `json:"proof"`
@@ -44,29 +49,11 @@ type AGTRequest struct { // The received payload of an AGT Request
 	PoP     utils.PopToken
 }
 
-type Response struct {
-	Error      bool
-	ErrCode    int
-	ErrMessage string
-	//In case of success
-	Body    string
-	Headers map[string]string
-}
+// ************* INITIALIZATION METHODS *************
 
-func writePolicies() {
-	content, err := json.Marshal(Policies)
-	if err != nil {
-		utils.Error.Printf("Could not write policies: %s", err)
-	}
-	err = ioutil.WriteFile("agt_config.json", content, 0644)
-	if err != nil {
-		utils.Error.Printf("Could not write policies: %s", err)
-	}
-	utils.Info.Printf("Policies updated and saved")
-}
-
+// Initializes the Policies from the configuration file.
 func initPolicies() {
-	content, err := ioutil.ReadFile("agt_config.json")
+	content, err := ioutil.ReadFile(POLICIES_FILE)
 	if err != nil {
 		utils.Error.Println("Error reading config file")
 		log.Fatal(err)
@@ -79,7 +66,7 @@ func initPolicies() {
 	initKey()
 }
 
-// Load key from file, if not, creates new key file
+// Loads the key contained in "Policies", if not, generates a new Key
 func initKey() {
 	switch Policies.SigningKey.Algorithm {
 	case "RS256":
@@ -98,55 +85,11 @@ func initKey() {
 	}
 }
 
-func genSignKey(alg string, lifetime int) {
-	switch alg {
-	case "RS256":
-		if err := utils.GenRsaKey(256, &Policies.SigningKey.RsaPrivKey); err != nil {
-			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
-		} else { // Key generated correctly, saving it
-			utils.Info.Printf("RSA key generated correctly")
-			keyUuid := uuid.New()
-			if err := utils.ExportKeyPair(Policies.SigningKey.RsaPrivKey, keyUuid.String()+".rsa", keyUuid.String()+".rsa.pub"); err != nil {
-				utils.Error.Printf("Error exporting key: %s", err)
-			} else {
-				Policies.SigningKey.Algorithm = "RS256"
-				Policies.SigningKey.PrivKeyDir = keyUuid.String() + ".rsa"
-				Policies.SigningKey.PubKeyDir = keyUuid.String() + ".rsa.pub"
-			}
-		}
-	case "ES256":
-		if err := utils.GenEcdsaKey(elliptic.P256(), &Policies.SigningKey.EcdsaPrivKey); err != nil {
-			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
-		} else { // Key generated correctly, saving it
-			utils.Info.Printf("ECDSA key generated correctly")
-			keyUuid := uuid.New()
-			if err := utils.ExportKeyPair(Policies.SigningKey.RsaPrivKey, keyUuid.String()+".ec", keyUuid.String()+".ec.pub"); err != nil {
-				utils.Error.Printf("Error exporting key: %s", err)
-			} else {
-				Policies.SigningKey.Algorithm = "ES256"
-				Policies.SigningKey.PrivKeyDir = keyUuid.String() + ".rsa"
-				Policies.SigningKey.PubKeyDir = keyUuid.String() + ".rsa.pub"
-			}
-		}
-	}
-	writePolicies()
-}
+// ************* END OF INITIALIZATION *************
 
-func getSignKey() crypto.PrivateKey {
-	actTime := time.Now().Unix()
-	if actTime > int64(Policies.SigningKey.Expiration) && Policies.SigningKey.Expiration != 0 {
-		genSignKey(Policies.SigningKey.Algorithm, 0)
-	}
-	switch Policies.SigningKey.Algorithm {
-	case "RS256":
-		return Policies.SigningKey.RsaPrivKey
-	case "ES256":
-		return Policies.SigningKey.EcdsaPrivKey
-	default:
-		return nil
-	}
-}
+// ************* HTTP REQUESTS MANAGEMENT METHODS *************
 
+// Channels for communication between methods will send a string map. This method generates an error string map that is then parsed by the Method that receives the string map.
 func genErrorMap(code string, message string) map[string]string {
 	errMap := make(map[string]string)
 	errMap["type"] = "error"
@@ -155,10 +98,12 @@ func genErrorMap(code string, message string) map[string]string {
 	return errMap
 }
 
+// Generates a handler for the URL "/agts". It allows the POST method and OPTIONS for Cors Responses.
+// It generates or call another function to generate a response. Then it sends the response.
 func makeAgtServerHandler(serverChannel chan map[string]string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		utils.Info.Printf("agtServer:url=%s", req.URL.Path)
+		//utils.Info.Printf("agtServer:url=%s", req.URL.Path)
 		bodyBytes, err := ioutil.ReadAll(req.Body)
 		if err != nil {
 			http.Error(w, "400 request unreadable.", 400)
@@ -169,7 +114,7 @@ func makeAgtServerHandler(serverChannel chan map[string]string) func(http.Respon
 		switch req.Method {
 		case "POST":
 			reqMap := make(map[string]string)
-			reqMap["typ"] = "agtRequest"
+			reqMap["type"] = "agtRequest"
 			reqMap["body"] = string(bodyBytes)
 			reqMap["pop"] = req.Header.Get("PoP")
 			if reqMap["pop"] != "" {
@@ -202,6 +147,7 @@ func makeAgtServerHandler(serverChannel chan map[string]string) func(http.Respon
 	}
 }
 
+// Generates a handler for the URL "/management". It allows the POST method and OPTIONS for Cors Responses.
 func makeMgmServerHandler(managementChannel chan map[string]string) func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -217,7 +163,7 @@ func makeMgmServerHandler(managementChannel chan map[string]string) func(http.Re
 		switch req.Method {
 		case "POST":
 			reqMap := make(map[string]string)
-			reqMap["typ"] = "management"
+			reqMap["type"] = "management"
 			reqMap["body"] = string(bodyBytes)
 			managementChannel <- reqMap
 			response := <-managementChannel
@@ -246,6 +192,7 @@ func makeMgmServerHandler(managementChannel chan map[string]string) func(http.Re
 	}
 }
 
+// Generates a handler for any URL. It just allows the OPTIONS method for Cors responses. In any other case, it throws 404 error
 func makeGenServerHandler() func(http.ResponseWriter, *http.Request) {
 	return func(w http.ResponseWriter, req *http.Request) {
 		switch req.Method {
@@ -280,6 +227,10 @@ func initAgtServer(serverChannel chan map[string]string, mgmChannel chan map[str
 		utils.Error.Fatal(http.ListenAndServe(Policies.Connection.ServingPort, muxServer))
 	}
 }
+
+// ************* END OF HTTP REQUESTS MANAGEMENT *************
+
+// ************* AGT GENERATION AND CHECKING *************
 
 // Part of roles
 func checkUserRole(userRole string) bool {
@@ -355,6 +306,7 @@ func authenticateClient(request AGTRequest) bool {
 	return false
 }
 
+// Removes the JTI of a pop token after its lifetime ends.
 func deleteJti(jti string) {
 	time.Sleep((time.Duration(Policies.PopCheckPolicies.TimeExp) + time.Duration(Policies.PopCheckPolicies.TimeMargin)) * time.Second)
 	delete(popIDCache, jti)
@@ -377,7 +329,7 @@ func addCheckJti(jti string) bool {
 	return true
 }
 
-// Checks pop before doing anything
+// Generates a Response for an AGT Request. It might be an error or AG Token
 func generateAgtResponse(request map[string]string) map[string]string {
 	longTerm := false
 	var agtRequest AGTRequest
@@ -442,6 +394,9 @@ func generateAgtResponse(request map[string]string) map[string]string {
 	return response
 }
 
+// ************* END OF AGT METHODS *************
+
+// ************* AGT SERVER MANAGEMENT METHODS *************
 func generateManagementResponse(request map[string]string) map[string]string {
 	// First, check management authorization. Management Key is in the JSON.
 	//var receivedRequest utils.PopToken
@@ -489,6 +444,73 @@ func generateManagementResponse(request map[string]string) map[string]string {
 	return response
 }
 
+// Writes the Policies struct holded by the server to the JSON file used for storage of those policies.
+func writePolicies() {
+	content, err := json.Marshal(Policies)
+	if err != nil {
+		utils.Error.Printf("Could not write policies: %s", err)
+	}
+	err = ioutil.WriteFile(POLICIES_FILE, content, 0644)
+	if err != nil {
+		utils.Error.Printf("Could not write policies: %s", err)
+	}
+	utils.Info.Printf("Policies updated and saved")
+}
+
+// Generates a new signing key given an algorithm.
+// The lifetime of that key can be set so once that time arrives it stops using it and generates a new one.
+func genSignKey(alg string, lifetime int) {
+	switch alg {
+	case "RS256":
+		if err := utils.GenRsaKey(256, &Policies.SigningKey.RsaPrivKey); err != nil {
+			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
+		} else { // Key generated correctly, saving it
+			utils.Info.Printf("RSA key generated correctly")
+			keyUuid := uuid.New()
+			if err := utils.ExportKeyPair(Policies.SigningKey.RsaPrivKey, keyUuid.String()+".rsa", keyUuid.String()+".rsa.pub"); err != nil {
+				utils.Error.Printf("Error exporting key: %s", err)
+			} else {
+				Policies.SigningKey.Algorithm = "RS256"
+				Policies.SigningKey.PrivKeyDir = keyUuid.String() + ".rsa"
+				Policies.SigningKey.PubKeyDir = keyUuid.String() + ".rsa.pub"
+			}
+		}
+	case "ES256":
+		if err := utils.GenEcdsaKey(elliptic.P256(), &Policies.SigningKey.EcdsaPrivKey); err != nil {
+			utils.Error.Printf("Error generating private key: %s. Signature not avaliable", err)
+		} else { // Key generated correctly, saving it
+			utils.Info.Printf("ECDSA key generated correctly")
+			keyUuid := uuid.New()
+			if err := utils.ExportKeyPair(Policies.SigningKey.RsaPrivKey, keyUuid.String()+".ec", keyUuid.String()+".ec.pub"); err != nil {
+				utils.Error.Printf("Error exporting key: %s", err)
+			} else {
+				Policies.SigningKey.Algorithm = "ES256"
+				Policies.SigningKey.PrivKeyDir = keyUuid.String() + ".rsa"
+				Policies.SigningKey.PubKeyDir = keyUuid.String() + ".rsa.pub"
+			}
+		}
+	}
+	writePolicies()
+}
+
+// Gets the Private Key used for sign
+func getSignKey() crypto.PrivateKey {
+	actTime := time.Now().Unix()
+	if actTime > int64(Policies.SigningKey.Expiration) && Policies.SigningKey.Expiration != 0 {
+		genSignKey(Policies.SigningKey.Algorithm, 0)
+	}
+	switch Policies.SigningKey.Algorithm {
+	case "RS256":
+		return Policies.SigningKey.RsaPrivKey
+	case "ES256":
+		return Policies.SigningKey.EcdsaPrivKey
+	default:
+		return nil
+	}
+}
+
+// ************* END OF MANAGEMENT METHODS *************
+
 func main() {
 	// Create new parser object
 	parser := argparse.NewParser("agt_server", "Process that simulates the behaviour of the Access Grant Server")
@@ -510,7 +532,6 @@ func main() {
 	muxServer := http.NewServeMux()                // ServeMux for routing
 
 	initPolicies()
-
 	go initAgtServer(serverChan, managementChan, muxServer)
 	for {
 		select {

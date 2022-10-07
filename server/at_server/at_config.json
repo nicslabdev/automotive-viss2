@@ -1,73 +1,28 @@
 {
-    "conectivity":{
-        "serving_port" : ":8080",
+    "connectivity": {
+        "serving_port": "8080",
         "tls": {
             "use": false,
-            "certificate_dir": "directory",
-            "key_dir": "directory"
+            "certificate_dir": "",
+            "key_dir": ""
         }
     },
-    "keys":{
-        "key_0" : {
-          "algorithm":"",
-          "symm_key":"",
-          "private_key_dir":"",
-          "public_key_dir":"",
-          "expiration":""
-        }
+    "signing_key": {
+        "algorithm": "HS256",
+        "symm_key_dir": "e4a5eb55-9b76-48d4-9ddf-d98461446f74.key",
+        "expiration": 0
     },
-    "PoP":{
-        "time_exp" : 3 ,
-        "time_error_margin_before": 3,
-        "time_error_margin_after" : 3,
-        "client_keys":{
-            "banned_thumbprints": [
-                "key10"
-            ]
-        }
+    "PoP_Policies": {
+        "time_exp": 0,
+        "time_error_margin": 0,
+        "banned_thumbprints": null,
+        "audience": ""
     },
-    "AGT":{
-        "client_ctx":{
-            "user": [
-                "OEM",
-                "Dealer",
-                "Independent",
-                "Owner",
-                "Driver",
-                "Passenger"
-            ],
-            "application": [
-                "OEM",
-                "Third Party"
-            ],
-            "device": [
-                "Vehicle",
-                "Nomadic",
-                "Cloud"
-            ]
-        },
-        "controlled_vehicles":[
-            "GEO001",
-            "NICS_CAR"
-        ],
-        "allowed_keys":{
-            "key_0" : {
-                "algorithm":"",
-                "public_key_dir":"",
-                "expiration":""
-            }
-        }
+    "agt_keys": null,
+    "AT": {
+        "vehicles": null
     },
-    "AT":{
-        "time_exp":3
-    },
-    "Management":{
-        "management_keys" : {
-            "key_0" : {
-                "algorithm" : "",
-                "public_key_dir":"",
-                "expiration" : ""
-            }
-        }
+    "Management": {
+        "allowed_keys": null
     }
 }

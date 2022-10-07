@@ -20,12 +20,12 @@ type Key struct {
 	Algorithm    string            `json:"algorithm"`
 	PrivKeyDir   string            `json:"private_key_dir,omitempty"`
 	PubKeyDir    string            `json:"public_key_dir,omitempty"`
-	SymmKeyDir   string            `json:"symm_key,omitempty"`
+	SymmKeyDir   string            `json:"symm_key_dir,omitempty"`
 	RsaPrivKey   *rsa.PrivateKey   `json:"-"`
 	RsaPubKey    rsa.PublicKey     `json:"-"`
 	EcdsaPrivKey *ecdsa.PrivateKey `json:"-"`
 	EcdsaPubKey  ecdsa.PublicKey   `json:"-"`
-	SymmKey      string            `json:"-"`
+	SymmKey      []byte            `json:"-"`
 	Expiration   int               `json:"expiration"`
 }
 
@@ -44,8 +44,8 @@ type AGTGenerate struct {
 	Audience      string    `json:"audience"`
 }
 
-type AGTCheck struct {
-	ClientContext ClientCtx `json:"client_ctx"`
+type ATGenerate struct {
+	VehicleIds []string `json:"vehicles"`
 }
 type ClientCtx struct {
 	User        []string `json:"user"`
@@ -56,3 +56,29 @@ type ClientCtx struct {
 type ManagementConfig struct {
 	TrustKeys map[string]Key `json:"allowed_keys"`
 }
+
+//*** TYPE SWITCH FOR ALL THE STRUCTS
+/*
+switch typ := pointer.(type){
+case *Policies:
+
+case *utils.Connectivity:
+
+case *utils.TlsUse:
+
+case *utils.Key:
+
+case *utils.KeySet:
+
+case *utils.PopCheck:
+
+case *utils.AGTGenerate:
+
+case *utils.ATGenerate:
+
+case *utils.ClientCtx:
+
+case *utils.ManagementConfig:
+
+}
+*/

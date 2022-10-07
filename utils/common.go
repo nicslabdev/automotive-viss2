@@ -94,14 +94,14 @@ func GenerateHmac(input string, key string) string {
 }
 
 //*
-func VerifyTokenSignature(token string, key string) error { // compatible with result from generateHmac()
+func VerifyTokenSignature(token string, key interface{}) error { // compatible with result from generateHmac()
 	var jwt JsonWebToken
 	err := jwt.DecodeFromFull(token)
 	if err != nil {
 		return err
 	}
 	return jwt.CheckSignature(key)
-} //*/
+}
 
 func ExtractFromToken(token string, claim string) string { // TODO remove white space sensitivity
 	delimiter1 := strings.Index(token, ".")

@@ -139,6 +139,10 @@ func (token JsonWebToken) CheckSignature(key interface{}) error {
 		} else {
 			return errors.New("invalid hs256 signature")
 		}
+	} else {
+		if err := token.CheckAssymSignature(key); err == nil {
+			return nil
+		}
 	}
 	return errors.New("invalid signing method")
 }
